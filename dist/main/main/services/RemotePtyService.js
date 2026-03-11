@@ -155,7 +155,7 @@ class RemotePtyService extends events_1.EventEmitter {
                 TERM: 'xterm-256color',
                 HOME: process.env.HOME || require('os').homedir(),
                 PATH: process.env.PATH || '',
-                KRB5CCNAME: process.env.KRB5CCNAME || '',
+                ...(process.env.KRB5CCNAME ? { KRB5CCNAME: process.env.KRB5CCNAME } : {}),
             },
         });
         // Send initial prompt if provided

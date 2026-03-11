@@ -193,6 +193,8 @@ export function registerSshIpc() {
               'echo __EMDASH_SSH_OK__',
             ];
 
+            console.log('[sshIpc] GSSAPI test: spawning ssh with args', sshArgs.join(' '));
+
             execFile(
               'ssh',
               sshArgs,
@@ -200,7 +202,6 @@ export function registerSshIpc() {
                 timeout: 15000,
                 env: {
                   ...process.env,
-                  KRB5CCNAME: process.env.KRB5CCNAME || '',
                 },
               },
               (err, stdout, stderr) => {
@@ -577,7 +578,9 @@ export function registerSshIpc() {
           passphrase,
         };
 
+        console.log(`[sshIpc] Connecting with authType=${config.authType} host=${config.host}`);
         const connectionId = await sshService.connect(fullConfig as any);
+        console.log(`[sshIpc] Connected successfully, connectionId=${connectionId}`);
         monitor.startMonitoring(connectionId, fullConfig as any);
         monitor.updateState(connectionId, 'connected');
         void import('../telemetry').then(({ capture }) => {

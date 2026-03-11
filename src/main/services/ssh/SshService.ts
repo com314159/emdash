@@ -303,6 +303,25 @@ export class SshService extends EventEmitter {
    * OpenSSH client which has native Kerberos support.
    */
   private async connectGssapi(connectionId: string, config: SshConfig): Promise<string> {
+    // First, try to detect and reuse the user's existing ControlMaster socket.
+    // The user's ~/.ssh/config likely has ControlMaster=auto + ControlPath set up.
+    // We can check if a working master exists by running `ssh -O check`.
+    const existingSocket = await this.findExistingControlMaster(config);
+    if (existingSocket) {
+      console.log(`[SshService] Reusing existing ControlMaster socket for ${config.host}`);
+      const gssapiConn: GssapiConnection = {
+        id: connectionId,
+        config,
+        controlSocketPath: existingSocket,
+        connectedAt: new Date(),
+        lastActivity: new Date(),
+      };
+      this.gssapiConnections.set(connectionId, gssapiConn);
+      this.emit('connected', connectionId);
+      return connectionId;
+    }
+
+    // No existing ControlMaster — create our own
     const socketPath = join(tmpdir(), `emdash-ssh-${connectionId}`);
 
     // Clean up any stale socket file
@@ -330,6 +349,9 @@ export class SshService extends EventEmitter {
       'BatchMode=yes',
       '-o',
       'ConnectTimeout=15',
+      // Override user's ControlMaster/ControlPath config to avoid conflicts
+      '-o',
+      `ControlPath=${socketPath}`,
       '-p',
       String(config.port),
       '-l',
@@ -337,24 +359,52 @@ export class SshService extends EventEmitter {
       config.host,
     ];
 
+    console.log(`[SshService] connectGssapi: creating own ControlMaster at ${socketPath}`);
+    console.log(`[SshService] connectGssapi: ssh args: ${sshArgs.join(' ')}`);
+
     return new Promise<string>((resolve, reject) => {
+      let settled = false;
+
+      // Timeout: if ssh hangs (e.g. ControlMaster conflict), reject after 20s
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          console.error('[SshService] connectGssapi: timed out after 20s');
+          try {
+            proc.kill();
+          } catch {
+            /* ignore */
+          }
+          reject(
+            new Error(
+              'SSH GSSAPI connection timed out. Check your Kerberos ticket (run kinit) and SSH config.'
+            )
+          );
+        }
+      }, 20000);
+
       const proc = spawn('ssh', sshArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: {
           ...process.env,
-          // Ensure Kerberos ticket cache is available
-          KRB5CCNAME: process.env.KRB5CCNAME || '',
         },
       });
 
       let stderr = '';
       proc.stderr.on('data', (data: Buffer) => {
-        stderr += data.toString();
+        const chunk = data.toString();
+        stderr += chunk;
+        console.log(`[SshService] connectGssapi stderr: ${chunk.trim()}`);
       });
 
       // ssh -f will exit after backgrounding if auth succeeds.
       // If it exits with code 0, the ControlMaster is running.
       proc.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        console.log(`[SshService] connectGssapi: ssh exited with code ${code}`);
+
         if (code === 0) {
           const gssapiConn: GssapiConnection = {
             id: connectionId,
@@ -373,12 +423,84 @@ export class SshService extends EventEmitter {
       });
 
       proc.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
         reject(new Error(`Failed to spawn ssh: ${err.message}`));
       });
 
       // Store reference for cleanup
       this.gssapiProcesses.set(connectionId, proc);
     });
+  }
+
+  /**
+   * Try to find the user's existing ControlMaster socket for this host.
+   * Resolves the effective ControlPath from ssh config, then checks if a master is alive.
+   */
+  private async findExistingControlMaster(config: SshConfig): Promise<string | null> {
+    try {
+      // Use `ssh -G` to resolve the effective SSH config for this host
+      const { execFile: execFileCb } = require('child_process');
+      const resolvedConfig: string = await new Promise((resolve, reject) => {
+        execFileCb(
+          'ssh',
+          ['-G', '-p', String(config.port), '-l', config.username, config.host],
+          { timeout: 5000, env: { ...process.env } },
+          (err: any, stdout: string) => {
+            if (err) return reject(err);
+            resolve(stdout);
+          }
+        );
+      });
+
+      // Extract controlpath from resolved config
+      const controlPathMatch = resolvedConfig.match(/^controlpath\s+(.+)$/m);
+      if (!controlPathMatch) {
+        console.log('[SshService] No ControlPath found in SSH config');
+        return null;
+      }
+
+      const controlPath = controlPathMatch[1].trim();
+      if (controlPath === 'none') {
+        return null;
+      }
+
+      console.log(`[SshService] Found ControlPath in SSH config: ${controlPath}`);
+
+      // Check if a ControlMaster is alive at that path
+      const checkResult: boolean = await new Promise((resolve) => {
+        execFileCb(
+          'ssh',
+          [
+            '-O',
+            'check',
+            '-S',
+            controlPath,
+            '-p',
+            String(config.port),
+            '-l',
+            config.username,
+            config.host,
+          ],
+          { timeout: 5000, env: { ...process.env } },
+          (err: any) => {
+            resolve(!err);
+          }
+        );
+      });
+
+      if (checkResult) {
+        console.log(`[SshService] Existing ControlMaster is alive at ${controlPath}`);
+        return controlPath;
+      } else {
+        console.log('[SshService] No active ControlMaster found');
+        return null;
+      }
+    } catch (err) {
+      console.log('[SshService] findExistingControlMaster error:', err);
+      return null;
+    }
   }
 
   /**

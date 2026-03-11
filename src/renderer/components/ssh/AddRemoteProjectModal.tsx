@@ -313,6 +313,8 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
           } else if (
             !/^[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]$/.test(formData.host.trim()) &&
             !/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(formData.host.trim()) &&
+            // Allow IPv6 addresses (e.g. 2605:340:cd52:106:2ecf:7e81:50d5:93f5)
+            !/^[0-9a-fA-F:]+$/.test(formData.host.trim()) &&
             // Allow single-word SSH aliases like "lamb_clutha"
             !/^[a-zA-Z0-9_-]+$/.test(formData.host.trim())
           ) {
@@ -587,7 +589,9 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
 
     if (currentStep === 'auth') {
       // Test connection before proceeding
+      console.log('[AddRemoteProject] Testing connection...');
       const success = await testConnection();
+      console.log('[AddRemoteProject] Test result:', success);
       if (!success) return;
 
       // Create connection for browsing
@@ -604,10 +608,15 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
           passphrase: formData.authType === 'key' ? formData.passphrase || undefined : undefined,
         };
 
+        console.log('[AddRemoteProject] Calling sshConnect...', {
+          authType: formData.authType,
+          host: formData.host,
+        });
         const connId = await window.electronAPI.sshConnect({
           ...connectConfig,
           id: connectionId || undefined,
         });
+        console.log('[AddRemoteProject] sshConnect returned connId:', connId);
         setConnectionId(connId);
 
         // Browse directly with connId since connectionId state hasn't updated yet
@@ -615,7 +624,9 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
         setIsBrowsing(true);
         setBrowseError(null);
         try {
+          console.log('[AddRemoteProject] Listing files at:', homePath);
           const result = await window.electronAPI.sshListFiles(connId, homePath);
+          console.log('[AddRemoteProject] sshListFiles result:', result);
           const entries: FileEntry[] =
             result && typeof result === 'object' && 'files' in result
               ? (result.files as FileEntry[]) || []
@@ -630,18 +641,21 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
           setFileEntries(sorted);
           updateField('remotePath', homePath);
         } catch (browseErr) {
+          console.error('[AddRemoteProject] sshListFiles error:', browseErr);
           const msg = browseErr instanceof Error ? browseErr.message : 'Failed to browse directory';
           setBrowseError(msg);
         } finally {
           setIsBrowsing(false);
         }
       } catch (error) {
+        console.error('[AddRemoteProject] sshConnect error:', error);
         const message = error instanceof Error ? error.message : 'Failed to connect';
         setTestStatus('idle');
         setTestResult(null);
         setErrors((prev) => ({ ...prev, general: message }));
         return;
       }
+      console.log('[AddRemoteProject] Auth step completed, advancing to next step');
     }
 
     // Handle repo creation/cloning on the path step before advancing to confirm
