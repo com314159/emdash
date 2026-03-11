@@ -110,10 +110,6 @@ export class TerminalSessionManager {
   private currentSubmittedInput = '';
   private autoCopyOnSelection = false;
   private selectionChangeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly pendingWriteQueue: string[] = [];
-  private queuedWriteChars = 0;
-  private writeDrainScheduled = false;
-  private writeInFlight = false;
   private shouldScrollToBottomAfterWrites = false;
   private lastSlowInputLogAt = 0;
   private terminalConfigFontSize: number | null = null;
@@ -491,10 +487,6 @@ export class TerminalSessionManager {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    this.pendingWriteQueue.length = 0;
-    this.queuedWriteChars = 0;
-    this.writeDrainScheduled = false;
-    this.writeInFlight = false;
     this.shouldScrollToBottomAfterWrites = false;
     this.detach();
     this.stopSnapshotTimer();
@@ -1158,61 +1150,40 @@ export class TerminalSessionManager {
     this.disposables.push(offData, offExit);
   }
 
+  /**
+   * Write data to xterm.js directly, letting xterm's own internal write buffer
+   * and rendering scheduler handle batching.  Previously this went through a
+   * pendingWriteQueue gated by requestAnimationFrame, which added up to 16.7ms
+   * of latency per chunk.  xterm.js v5+ already coalesces writes and
+   * schedules rendering via its own rAF internally, so the outer queue was
+   * redundant and harmful for interactive latency.
+   *
+   * For very large bursts (>64K chars at once — e.g. `cat bigfile`) we still
+   * slice to avoid blocking the renderer main thread for too long.
+   */
   private enqueueTerminalWrite(chunk: string) {
     if (!chunk || this.disposed) return;
-    this.pendingWriteQueue.push(chunk);
-    this.queuedWriteChars += chunk.length;
-    this.scheduleWriteDrain();
-  }
 
-  private scheduleWriteDrain() {
-    if (this.writeDrainScheduled || this.disposed) return;
-    this.writeDrainScheduled = true;
-    requestAnimationFrame(() => {
-      this.writeDrainScheduled = false;
-      this.drainQueuedWrites();
-    });
-  }
-
-  private dequeueWriteSlice(maxChars: number): string {
-    if (!this.pendingWriteQueue.length) return '';
-    const first = this.pendingWriteQueue[0];
-    if (first.length <= maxChars) {
-      this.pendingWriteQueue.shift();
-      this.queuedWriteChars = Math.max(0, this.queuedWriteChars - first.length);
-      return first;
-    }
-
-    const slice = first.slice(0, maxChars);
-    this.pendingWriteQueue[0] = first.slice(maxChars);
-    this.queuedWriteChars = Math.max(0, this.queuedWriteChars - slice.length);
-    return slice;
-  }
-
-  private drainQueuedWrites() {
-    if (this.disposed || this.writeInFlight) return;
-
-    const slice = this.dequeueWriteSlice(MAX_TERMINAL_WRITE_CHARS_PER_SLICE);
-    if (!slice) {
-      if (this.shouldScrollToBottomAfterWrites) {
-        this.shouldScrollToBottomAfterWrites = false;
-        try {
-          this.terminal.scrollToBottom();
-        } catch {}
+    if (chunk.length <= MAX_TERMINAL_WRITE_CHARS_PER_SLICE) {
+      // Fast path — write directly, xterm handles scheduling internally
+      this.writeToTerminal(chunk);
+    } else {
+      // Large burst — slice to keep the main thread responsive
+      let offset = 0;
+      while (offset < chunk.length) {
+        const slice = chunk.slice(offset, offset + MAX_TERMINAL_WRITE_CHARS_PER_SLICE);
+        offset += MAX_TERMINAL_WRITE_CHARS_PER_SLICE;
+        this.writeToTerminal(slice);
       }
-      return;
     }
+  }
 
-    this.writeInFlight = true;
+  private writeToTerminal(data: string) {
+    if (this.disposed) return;
     try {
-      this.terminal.write(slice, () => {
-        this.writeInFlight = false;
+      this.terminal.write(data, () => {
         if (this.disposed) return;
         this.markFirstFrameRendered();
-        if (this.queuedWriteChars > 0) {
-          this.scheduleWriteDrain();
-          return;
-        }
         if (this.shouldScrollToBottomAfterWrites) {
           this.shouldScrollToBottomAfterWrites = false;
           try {
@@ -1221,11 +1192,9 @@ export class TerminalSessionManager {
         }
       });
     } catch (err) {
-      this.writeInFlight = false;
       // Guard against xterm.js parser errors (e.g. DECRQM "r is not defined"
       // in 6.0.0). Log once and continue — the terminal session stays usable.
       log.warn('terminalSession:writeError', { id: this.id, error: (err as Error)?.message });
-      if (this.queuedWriteChars > 0) this.scheduleWriteDrain();
     }
   }
 
