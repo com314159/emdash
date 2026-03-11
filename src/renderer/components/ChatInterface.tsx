@@ -566,6 +566,7 @@ const ChatInterface: React.FC<Props> = ({
           'continue',
           'codebuff',
           'mistral',
+          'shell',
         ];
         if (last && (validAgents as string[]).includes(last)) {
           setAgent(last as Agent);
@@ -726,7 +727,7 @@ const ChatInterface: React.FC<Props> = ({
       if (!statuses) return;
       setAgentStatuses(statuses);
       if (cancelled) return;
-      const installed = statuses?.[agent]?.installed === true;
+      const installed = agent === 'shell' || statuses?.[agent]?.installed === true;
       setIsAgentInstalled(installed);
     };
 
@@ -1175,7 +1176,7 @@ const ChatInterface: React.FC<Props> = ({
                       ? { connectionId: projectRemoteConnectionId }
                       : undefined
                   }
-                  providerId={agent}
+                  providerId={agent === 'shell' ? undefined : agent}
                   autoApprove={autoApproveEnabled}
                   env={taskEnv}
                   keepAlive={true}

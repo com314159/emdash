@@ -142,6 +142,7 @@ export const OPEN_IN_APPS: OpenInAppConfigShape[] = [
           'warppreview://action/new_window?path={{path_url}}',
         ],
         bundleIds: ['dev.warp.Warp-Stable'],
+        appNames: ['Warp'],
       },
     },
   },

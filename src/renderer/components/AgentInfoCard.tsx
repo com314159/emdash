@@ -124,6 +124,11 @@ export const agentInfo: Record<UiAgent, AgentInfo> = {
     description:
       'Terminal coding agent with auto-commit, dry-run previews, community skills, and headless CI/CD mode. Supports multiple LLM providers and unrestricted auto-approve for hands-free operation.',
   },
+  shell: {
+    title: 'Shell',
+    description:
+      'Plain terminal session — no AI agent. Use this to run your own commands, inspect files, or do manual work in the worktree.',
+  },
 };
 
 type Props = {

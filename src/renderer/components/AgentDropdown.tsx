@@ -27,7 +27,7 @@ export const AgentDropdown: React.FC<AgentDropdownProps> = ({
       </SelectTrigger>
       <SelectContent side="top" className="z-[120]">
         {Object.entries(agentConfig)
-          .filter(([key]) => installedSet.has(key))
+          .filter(([key]) => key === 'shell' || installedSet.has(key))
           .map(([key, config]) => {
             const isDisabled = disabledAgents.includes(key);
             return (

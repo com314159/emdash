@@ -21,6 +21,7 @@ export const PROVIDER_IDS = [
   'mistral',
   'pi',
   'autohand',
+  'shell',
 ] as const;
 
 export type ProviderId = (typeof PROVIDER_IDS)[number];
@@ -350,6 +351,14 @@ export const PROVIDERS: ProviderDefinition[] = [
     autoApproveFlag: '--unrestricted',
     initialPromptFlag: '-p',
     icon: 'autohand.svg',
+    terminalOnly: true,
+  },
+  {
+    id: 'shell',
+    name: 'Shell',
+    cli: '',
+    commands: [],
+    versionArgs: [],
     terminalOnly: true,
   },
 ];

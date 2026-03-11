@@ -77,7 +77,7 @@ export function CreateChatModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!installedSet.has(selectedAgent)) {
+    if (selectedAgent !== 'shell' && !installedSet.has(selectedAgent)) {
       setError('Please select an installed agent');
       return;
     }
