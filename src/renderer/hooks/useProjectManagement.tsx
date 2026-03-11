@@ -18,8 +18,8 @@ import { useGithubContext } from '../contexts/GithubContextProvider';
 import { useToast } from './use-toast';
 
 // ---------------------------------------------------------------------------
-// Shared helper — build a Project object from a local git path.
-// Returns null when the path is not a git repository.
+// Shared helper — build a Project object from a local path.
+// Works for both Git repositories and plain directories.
 // ---------------------------------------------------------------------------
 async function buildProjectFromGitPath(
   gitPath: string,
@@ -39,7 +39,20 @@ async function buildProjectFromGitPath(
   const projectName = selectedPath.split(/[/\\]/).filter(Boolean).pop() || 'Unknown Project';
 
   if (!gitInfo.isGitRepo) {
-    return { projectToSave: null as unknown as Project, remoteUrl, repoKey, isGitRepo: false };
+    // Non-Git directory: create a project without Git/GitHub info.
+    // Worktree isolation and diff features will be unavailable.
+    const projectToSave = withRepoKey(
+      {
+        id: Date.now().toString(),
+        name: projectName,
+        path: selectedPath,
+        repoKey,
+        gitInfo: { isGitRepo: false },
+        tasks: [],
+      } as Project,
+      platform
+    );
+    return { projectToSave, remoteUrl, repoKey, isGitRepo: false };
   }
 
   const baseProject: Project = {
@@ -287,10 +300,8 @@ export const useProjectManagement = () => {
           if (!built.isGitRepo) {
             toast({
               title: 'Project Opened',
-              description: `This directory is not a Git repository. Path: ${result.path}`,
-              variant: 'destructive',
+              description: `Opened as a plain directory (no Git). Worktree isolation is unavailable.`,
             });
-            return;
           }
 
           const existingProject = projects.find(
@@ -407,7 +418,14 @@ export const useProjectManagement = () => {
       });
       try {
         const built = await buildProjectFromGitPath(projectPath, platform ?? '', isAuthenticated);
-        if (!built || !built.isGitRepo) return;
+        if (!built) return;
+
+        if (!built.isGitRepo) {
+          toast({
+            title: 'Project Opened',
+            description: `Opened as a plain directory (no Git). Worktree isolation is unavailable.`,
+          });
+        }
 
         const existingProject = projects.find(
           (p) => getProjectRepoKey(p, platform) === built.repoKey
