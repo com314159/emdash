@@ -34,6 +34,7 @@ import useUpdateNotifier from '@/hooks/useUpdateNotifier';
 import { activityStore } from '@/lib/activityStore';
 import { agentStatusStore } from '@/lib/agentStatusStore';
 import { handleMenuUndo, handleMenuRedo } from '@/lib/menuUndoRedo';
+import { useAppSettings } from '@/contexts/AppSettingsProvider';
 import { rpc } from '@/lib/rpc';
 import { soundPlayer } from '@/lib/soundPlayer';
 import BrowserProvider, { useBrowser } from '@/providers/BrowserProvider';
@@ -87,19 +88,15 @@ export function Workspace() {
   }, []);
   useAgentEvents(handleAgentEvent);
 
-  // Load notification sound settings
+  // Sync notification sound settings reactively — updates when user toggles in Settings
+  const { settings: appSettings } = useAppSettings();
   useEffect(() => {
-    (async () => {
-      try {
-        const settings = await rpc.appSettings.get();
-        const notif = settings.notifications;
-        const masterEnabled = Boolean(notif?.enabled ?? true);
-        const soundOn = Boolean(notif?.sound ?? true);
-        soundPlayer.setEnabled(masterEnabled && soundOn);
-        soundPlayer.setFocusMode(notif?.soundFocusMode ?? 'always');
-      } catch {}
-    })();
-  }, []);
+    const notif = appSettings?.notifications;
+    const masterEnabled = Boolean(notif?.enabled ?? true);
+    const soundOn = Boolean(notif?.sound ?? true);
+    soundPlayer.setEnabled(masterEnabled && soundOn);
+    soundPlayer.setFocusMode(notif?.soundFocusMode ?? 'always');
+  }, [appSettings?.notifications]);
 
   // --- View-mode / UI visibility state (inlined from former useModalState) ---
   const [showSettingsPage, setShowSettingsPage] = useState(false);
