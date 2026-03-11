@@ -130,6 +130,8 @@ declare global {
         listener: (info: { exitCode: number; signal?: number }) => void
       ) => () => void;
       onPtyStarted: (listener: (data: { id: string }) => void) => () => void;
+      onPtyActivity: (listener: (data: { id: string; chunk?: string }) => void) => () => void;
+      onPtyExitGlobal: (listener: (data: { id: string }) => void) => () => void;
       onAgentEvent: (
         listener: (event: AgentEvent, meta: { appFocused: boolean }) => void
       ) => () => void;
@@ -1001,6 +1003,25 @@ declare global {
         threads?: any[];
         error?: string;
       }>;
+      // Forgejo
+      forgejoSaveCredentials?: (args: {
+        instanceUrl: string;
+        token: string;
+      }) => Promise<{ success: boolean; error?: string }>;
+      forgejoClearCredentials?: () => Promise<{ success: boolean; error?: string }>;
+      forgejoCheckConnection?: () => Promise<{
+        success: boolean;
+        error?: string;
+      }>;
+      forgejoInitialFetch?: (
+        projectPath: string,
+        limit?: number
+      ) => Promise<{ success: boolean; issues?: any[]; error?: string }>;
+      forgejoSearchIssues?: (
+        projectPath: string,
+        searchTerm: string,
+        limit?: number
+      ) => Promise<{ success: boolean; issues?: any[]; error?: string }>;
       getProviderStatuses?: (opts?: {
         refresh?: boolean;
         providers?: string[];
@@ -1340,6 +1361,8 @@ export interface ElectronAPI {
     listener: (info: { exitCode: number; signal?: number }) => void
   ) => () => void;
   onPtyStarted: (listener: (data: { id: string }) => void) => () => void;
+  onPtyActivity: (listener: (data: { id: string; chunk?: string }) => void) => () => void;
+  onPtyExitGlobal: (listener: (data: { id: string }) => void) => () => void;
   onAgentEvent: (
     listener: (event: AgentEvent, meta: { appFocused: boolean }) => void
   ) => () => void;
