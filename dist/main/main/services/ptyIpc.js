@@ -97,10 +97,17 @@ const finalizedPtys = new Set();
 // Track WebContents that have a 'destroyed' listener to avoid duplicates
 const wcDestroyedListeners = new Set();
 let isAppQuitting = false;
-// Buffer PTY output to reduce IPC overhead (helps SSH feel less laggy)
+// Buffer PTY output to reduce IPC overhead.
+// Uses setImmediate for first chunk (near-zero latency) and falls back to a
+// short timer only when data arrives continuously at high throughput.
 const ptyDataBuffers = new Map();
 const ptyDataTimers = new Map();
-const PTY_DATA_FLUSH_MS = 16;
+const PTY_DATA_FLUSH_MS = 8; // Only used for high-throughput batching fallback
+const PTY_ACTIVITY_SAMPLE_CHARS = 8192;
+// Separate throttle for pty:activity messages (does not block pty:data)
+const PTY_ACTIVITY_THROTTLE_MS = 200;
+const ptyActivityTimers = new Map();
+const ptyActivityPending = new Map();
 const CODEX_BIND_LOOKBACK_MS = 15000;
 const CODEX_BIND_TIMEOUT_MS = 20000;
 const CODEX_BIND_POLL_MS = 250;
@@ -244,12 +251,36 @@ function safeSendToOwner(id, channel, payload) {
         return false;
     }
 }
+function sendPtyExitGlobal(id) {
+    safeSendToOwner(id, 'pty:exit:global', { id });
+}
 function flushPtyData(id) {
     const buf = ptyDataBuffers.get(id);
     if (!buf)
         return;
     ptyDataBuffers.delete(id);
+    // Send data to renderer immediately — this is the latency-critical path
     safeSendToOwner(id, `pty:data:${id}`, buf);
+    // Activity classification is sent on a separate throttled channel
+    scheduleActivityUpdate(id, buf);
+}
+/** Throttled activity updates — decoupled from the data path to avoid doubling IPC per flush */
+function scheduleActivityUpdate(id, chunk) {
+    // Always keep the latest chunk for when the timer fires
+    const prev = ptyActivityPending.get(id) || '';
+    const merged = prev + chunk;
+    ptyActivityPending.set(id, merged.length <= PTY_ACTIVITY_SAMPLE_CHARS ? merged : merged.slice(-PTY_ACTIVITY_SAMPLE_CHARS));
+    if (ptyActivityTimers.has(id))
+        return;
+    const t = setTimeout(() => {
+        ptyActivityTimers.delete(id);
+        const sample = ptyActivityPending.get(id);
+        ptyActivityPending.delete(id);
+        if (sample) {
+            safeSendToOwner(id, 'pty:activity', { id, chunk: sample });
+        }
+    }, PTY_ACTIVITY_THROTTLE_MS);
+    ptyActivityTimers.set(id, t);
 }
 function clearPtyData(id) {
     const t = ptyDataTimers.get(id);
@@ -258,10 +289,18 @@ function clearPtyData(id) {
         ptyDataTimers.delete(id);
     }
     ptyDataBuffers.delete(id);
+    // Also clean up activity throttle state
+    const at = ptyActivityTimers.get(id);
+    if (at) {
+        clearTimeout(at);
+        ptyActivityTimers.delete(id);
+    }
+    ptyActivityPending.delete(id);
 }
 function cleanupPtySession(id) {
     // Ensure telemetry timers are cleared even on manual kill
     maybeMarkProviderFinish(id, null, undefined, 'manual_kill');
+    sendPtyExitGlobal(id);
     // Kill associated tmux session if this PTY was tmux-wrapped
     if ((0, ptyManager_1.getPtyTmuxSessionName)(id)) {
         (0, ptyManager_1.killTmuxSession)(id);
@@ -275,10 +314,34 @@ function bufferedSendPtyData(id, chunk) {
     ptyDataBuffers.set(id, prev + chunk);
     if (ptyDataTimers.has(id))
         return;
-    const t = setTimeout(() => {
+    // Use setImmediate for the first chunk — flushes at the end of the current
+    // I/O cycle (~0-1ms) instead of waiting a full 16ms timer tick.  Subsequent
+    // chunks that arrive in the same tick are automatically coalesced because the
+    // timer guard above prevents scheduling a second flush.
+    //
+    // For sustained high-throughput (e.g. `cat bigfile`), the write callback from
+    // node-pty fires many times per tick, so the coalescing still provides
+    // batching without adding latency to interactive keystrokes.
+    const t = setImmediate(() => {
         ptyDataTimers.delete(id);
-        flushPtyData(id);
-    }, PTY_DATA_FLUSH_MS);
+        const buf = ptyDataBuffers.get(id) || '';
+        // If a very large burst accumulated, flush now but schedule a short timer
+        // for the next wave to avoid flooding the IPC channel.
+        if (buf.length > 65536) {
+            flushPtyData(id);
+            // Briefly switch to timer-based batching for the remainder of the burst
+            if (ptyDataBuffers.has(id)) {
+                const bt = setTimeout(() => {
+                    ptyDataTimers.delete(id);
+                    flushPtyData(id);
+                }, PTY_DATA_FLUSH_MS);
+                ptyDataTimers.set(id, bt);
+            }
+        }
+        else {
+            flushPtyData(id);
+        }
+    });
     ptyDataTimers.set(id, t);
 }
 /**
@@ -296,34 +359,38 @@ function pickReverseTunnelPort(ptyId) {
  * hook entries, merging with any existing content (same logic as
  * `ClaudeHookService.writeHookConfig` locally).
  *
- * Uses two ssh exec calls: one to read the existing file, one to write the
- * merged result.  This avoids terminal line-buffer corruption and preserves
- * user-defined settings and hooks.
+ * Combines read + merge + write into a SINGLE ssh exec call to cut startup
+ * latency from ~2-10s (two sequential SSH connections) to ~0.5-2s (one call).
  */
 async function writeRemoteHookConfig(sshArgs, sshTarget, cwd) {
     const dir = `${cwd}/.claude`;
     const filePath = `${dir}/settings.local.json`;
-    // Read existing config (if any) from the remote
+    // Build the hook entries that need to be merged
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let existing = {};
-    try {
-        const { stdout } = await execFileAsync('ssh', [
-            ...sshArgs,
-            sshTarget,
-            `cat ${(0, shellEscape_1.quoteShellArg)(filePath)} 2>/dev/null || echo '{}'`,
-        ]);
-        existing = JSON.parse(stdout.trim());
-    }
-    catch {
-        // File doesn't exist, isn't valid JSON, or ssh failed — start fresh
-    }
-    ClaudeHookService_1.ClaudeHookService.mergeHookEntries(existing);
-    const json = JSON.stringify(existing, null, 2);
-    await execFileAsync('ssh', [
-        ...sshArgs,
-        sshTarget,
-        `mkdir -p ${(0, shellEscape_1.quoteShellArg)(dir)} && printf '%s\\n' ${(0, shellEscape_1.quoteShellArg)(json)} > ${(0, shellEscape_1.quoteShellArg)(filePath)}`,
-    ]);
+    const hookTemplate = {};
+    ClaudeHookService_1.ClaudeHookService.mergeHookEntries(hookTemplate);
+    const hookJson = JSON.stringify(hookTemplate);
+    // Single SSH exec: read existing config, merge hook entries, write back.
+    // Uses a Python one-liner (available on virtually all Linux servers) to
+    // do a deep-ish merge: existing values are preserved, hook entries are
+    // added/updated.  Falls back to a pure-shell approach if Python isn't
+    // available.
+    const remoteScript = [
+        `mkdir -p ${(0, shellEscape_1.quoteShellArg)(dir)}`,
+        `python3 -c '`,
+        `import json,sys,os`,
+        `p=${(0, shellEscape_1.quoteShellArg)(filePath)}`,
+        `h=json.loads(sys.argv[1])`,
+        `try:`,
+        `  e=json.load(open(p)) if os.path.isfile(p) else {}`,
+        `except: e={}`,
+        `e.update(h)`,
+        `open(p,"w").write(json.dumps(e,indent=2)+"\\n")`,
+        `' ${(0, shellEscape_1.quoteShellArg)(hookJson)}`,
+        `2>/dev/null`,
+        `|| printf '%s\\n' ${(0, shellEscape_1.quoteShellArg)(JSON.stringify(hookTemplate, null, 2))} > ${(0, shellEscape_1.quoteShellArg)(filePath)}`,
+    ].join(' ');
+    await execFileAsync('ssh', [...sshArgs, sshTarget, remoteScript]);
 }
 async function writeRemoteOpenCodePlugin(sshArgs, sshTarget, ptyId) {
     const configDir = OpenCodeHookService_1.OpenCodeHookService.getRemoteConfigDir(ptyId);
@@ -525,6 +592,7 @@ function registerPtyIpc() {
                     flushPtyData(id);
                     clearPtyData(id);
                     safeSendToOwner(id, `pty:exit:${id}`, { exitCode, signal });
+                    sendPtyExitGlobal(id);
                     owners.delete(id);
                     listeners.delete(id);
                     (0, ptyManager_1.removePtyRecord)(id);
@@ -587,6 +655,7 @@ function registerPtyIpc() {
                         flushPtyData(id);
                         clearPtyData(id);
                         safeSendToOwner(id, `pty:exit:${id}`, { exitCode, signal });
+                        sendPtyExitGlobal(id);
                         owners.delete(id);
                         listeners.delete(id);
                         (0, ptyManager_1.removePtyRecord)(id);
@@ -724,6 +793,7 @@ function registerPtyIpc() {
                         return;
                     }
                     safeSendToOwner(id, `pty:exit:${id}`, { exitCode, signal });
+                    sendPtyExitGlobal(id);
                     maybeMarkProviderFinish(id, exitCode, signal, isAppQuitting ? 'app_quit' : 'process_exit');
                     owners.delete(id);
                     listeners.delete(id);
@@ -953,7 +1023,11 @@ function registerPtyIpc() {
                     catch { }
                     listeners.delete(id);
                 }
-                const ssh = await resolveSshInvocation(remote.connectionId);
+                // Resolve SSH invocation and tmux setting in parallel
+                const [ssh, remoteTmux] = await Promise.all([
+                    resolveSshInvocation(remote.connectionId),
+                    cwd ? resolveTmuxEnabled(cwd) : Promise.resolve(false),
+                ]);
                 const remoteProvider = buildRemoteProviderInvocation({
                     providerId,
                     autoApprove,
@@ -963,17 +1037,22 @@ function registerPtyIpc() {
                 const resolvedConfig = (0, ptyManager_1.resolveProviderCommandConfig)(providerId);
                 const mergedEnv = resolvedConfig?.env ? { ...resolvedConfig.env, ...env } : env;
                 const preProviderCommands = [];
+                // Fire off remote config writes in parallel with PTY startup.
+                // These SSH exec calls are independent of the PTY connection and
+                // only need to complete before the agent reads the config — which
+                // happens well after the shell prompt is ready.
+                const backgroundSetupPromises = [];
                 if (providerId === 'opencode') {
-                    try {
-                        const remoteConfigDir = await writeRemoteOpenCodePlugin(ssh.args, ssh.target, id);
+                    backgroundSetupPromises.push(writeRemoteOpenCodePlugin(ssh.args, ssh.target, id)
+                        .then((remoteConfigDir) => {
                         preProviderCommands.push(`export OPENCODE_CONFIG_DIR="${remoteConfigDir}"`);
-                    }
-                    catch (err) {
+                    })
+                        .catch((err) => {
                         logger_1.log.warn('ptyIpc:startDirect failed to write remote OpenCode plugin', {
                             id,
                             error: err?.message || String(err),
                         });
-                    }
+                    }));
                 }
                 // Set up reverse SSH tunnel for hook events if the local hook
                 // server is running. This lets the remote agent call back to
@@ -981,24 +1060,26 @@ function registerPtyIpc() {
                 const hookPort = AgentEventService_1.agentEventService.getPort();
                 if (hookPort > 0) {
                     const remotePort = pickReverseTunnelPort(id);
-                    // For Claude, write hook config on the remote via ssh exec
-                    // (not keystroke injection — long JSON lines get corrupted by
-                    // terminal line-buffer limits when typed into the PTY).
-                    // Done before pushing -R so the exec connection doesn't
-                    // unnecessarily bind the reverse tunnel port.
+                    // For Claude, write hook config on the remote via ssh exec.
+                    // Runs in background — the config only needs to exist before
+                    // the agent reads it, which happens after shell prompt + agent
+                    // startup (several seconds later).
                     if (providerId === 'claude' && cwd) {
-                        try {
-                            await writeRemoteHookConfig(ssh.args, ssh.target, cwd);
-                        }
-                        catch (err) {
+                        backgroundSetupPromises.push(writeRemoteHookConfig([...ssh.args], ssh.target, cwd).catch((err) => {
                             logger_1.log.warn('ptyIpc:startDirect failed to write remote hook config', {
                                 id,
                                 error: err?.message || String(err),
                             });
-                        }
+                        }));
                     }
                     ssh.args.push('-R', `127.0.0.1:${remotePort}:127.0.0.1:${hookPort}`);
                     preProviderCommands.push(`export EMDASH_HOOK_PORT=${(0, shellEscape_1.quoteShellArg)(String(remotePort))}`, `export EMDASH_HOOK_TOKEN=${(0, shellEscape_1.quoteShellArg)(AgentEventService_1.agentEventService.getToken())}`, `export EMDASH_PTY_ID=${(0, shellEscape_1.quoteShellArg)(id)}`);
+                }
+                // Wait for any setup that provides env vars needed by the init
+                // keystrokes (e.g. OPENCODE_CONFIG_DIR).  Hook config can finish
+                // later — it's okay if it lands after PTY spawn.
+                if (backgroundSetupPromises.length > 0) {
+                    await Promise.all(backgroundSetupPromises);
                 }
                 const remoteInitCommand = cwd
                     ? `cd ${(0, shellEscape_1.quoteShellArg)(cwd)} && exec \${SHELL:-/bin/sh} -il`
@@ -1021,6 +1102,7 @@ function registerPtyIpc() {
                         flushPtyData(id);
                         clearPtyData(id);
                         safeSendToOwner(id, `pty:exit:${id}`, { exitCode, signal });
+                        sendPtyExitGlobal(id);
                         maybeMarkProviderFinish(id, exitCode, signal, 'process_exit');
                         owners.delete(id);
                         listeners.delete(id);
@@ -1028,7 +1110,6 @@ function registerPtyIpc() {
                     });
                     listeners.add(id);
                 }
-                const remoteTmux = cwd ? await resolveTmuxEnabled(cwd) : false;
                 const tmuxOpt = remoteTmux ? { sessionName: (0, ptyManager_1.getTmuxSessionName)(id) } : undefined;
                 const remoteInit = buildRemoteInitKeystrokes({
                     cwd: undefined,
@@ -1141,6 +1222,7 @@ function registerPtyIpc() {
                         return;
                     }
                     safeSendToOwner(id, `pty:exit:${id}`, { exitCode, signal });
+                    sendPtyExitGlobal(id);
                     // For direct spawn: keep owner (shell respawn reuses it), delete listeners (shell respawn re-adds)
                     // For fallback: clean up owner since no shell respawn happens
                     if (usedFallback) {

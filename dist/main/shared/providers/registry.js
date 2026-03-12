@@ -29,6 +29,7 @@ exports.PROVIDER_IDS = [
     'mistral',
     'pi',
     'autohand',
+    'shell',
 ];
 exports.PROVIDERS = [
     {
@@ -151,6 +152,7 @@ exports.PROVIDERS = [
         versionArgs: ['--version'],
         cli: 'copilot',
         autoApproveFlag: '--allow-all-tools',
+        initialPromptFlag: '-i',
         icon: 'gh-copilot.svg',
         terminalOnly: true,
     },
@@ -320,6 +322,14 @@ exports.PROVIDERS = [
         autoApproveFlag: '--unrestricted',
         initialPromptFlag: '-p',
         icon: 'autohand.svg',
+        terminalOnly: true,
+    },
+    {
+        id: 'shell',
+        name: 'Shell',
+        cli: '',
+        commands: [],
+        versionArgs: [],
         terminalOnly: true,
     },
 ];

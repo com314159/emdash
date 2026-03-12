@@ -31,6 +31,7 @@ const rpc_1 = require("../../shared/ipc/rpc");
 const electron_1 = require("electron");
 const gitlabIpc_1 = require("./gitlabIpc");
 const plainIpc_1 = require("./plainIpc");
+const forgejoIpc_1 = require("./forgejoIpc");
 exports.rpcRouter = (0, rpc_1.createRPCRouter)({
     db: dbIpc_1.databaseController,
     appSettings: settingsIpc_1.appSettingsController,
@@ -66,4 +67,5 @@ function registerAllIpc() {
     (0, mcpIpc_1.registerMcpIpc)();
     (0, gitlabIpc_1.registerGitlabIpc)();
     (0, plainIpc_1.registerPlainIpc)();
+    (0, forgejoIpc_1.registerForgejoIpc)();
 }

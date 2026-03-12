@@ -58,11 +58,15 @@ raw) {
     }
     return undefined;
 }
+/** Suppress duplicate OS notifications for the same PTY within this window. */
+const NOTIFICATION_DEDUP_MS = 60000;
 class AgentEventService {
     constructor() {
         this.server = null;
         this.port = 0;
         this.token = '';
+        /** Tracks the last OS notification timestamp per ptyId to suppress duplicates. */
+        this.recentNotifications = new Map();
     }
     async start() {
         if (this.server)
@@ -179,6 +183,13 @@ class AgentEventService {
                 return;
             if (!electron_1.Notification.isSupported())
                 return;
+            // Deduplicate: suppress if we recently showed a notification for this PTY.
+            // Claude Code fires both Notification (idle_prompt) and Stop hooks on
+            // completion, which arrive seconds apart with the same message.
+            const now = Date.now();
+            const lastShown = this.recentNotifications.get(event.ptyId);
+            if (lastShown && now - lastShown < NOTIFICATION_DEDUP_MS)
+                return;
             const providerName = (0, registry_1.getProvider)(event.providerId)?.name ?? event.providerId;
             const isMain = (0, ptyId_1.isMainPty)(event.ptyId);
             let taskName = null;
@@ -203,6 +214,7 @@ class AgentEventService {
                     }
                 });
             };
+            let shown = false;
             if (event.type === 'stop') {
                 const notification = new electron_1.Notification({
                     title: `${providerName}${titleSuffix}`,
@@ -211,6 +223,7 @@ class AgentEventService {
                 });
                 addClickHandler(notification);
                 notification.show();
+                shown = true;
             }
             else if (event.type === 'notification') {
                 const nt = event.payload.notificationType;
@@ -222,6 +235,17 @@ class AgentEventService {
                     });
                     addClickHandler(notification);
                     notification.show();
+                    shown = true;
+                }
+            }
+            if (shown) {
+                this.recentNotifications.set(event.ptyId, now);
+                // Prevent unbounded growth: prune stale entries
+                if (this.recentNotifications.size > 200) {
+                    for (const [key, ts] of this.recentNotifications) {
+                        if (now - ts > NOTIFICATION_DEDUP_MS)
+                            this.recentNotifications.delete(key);
+                    }
                 }
             }
         }

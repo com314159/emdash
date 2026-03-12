@@ -13,6 +13,8 @@ import { TERMINAL_SNAPSHOT_VERSION, type TerminalSnapshotPayload } from '#types/
 import { pendingInjectionManager } from '../lib/PendingInjectionManager';
 import { getProvider, type ProviderId } from '@shared/providers/registry';
 import { consumeSubmittedInputChunk } from './submitCapture';
+import { isSlashCommandInput } from '../lib/slashCommand';
+import { buildCommentInjectionPayload } from '../lib/terminalInjection';
 import {
   CTRL_J_ASCII,
   CTRL_U_ASCII,
@@ -21,7 +23,14 @@ import {
   shouldMapShiftEnterToCtrlJ,
   shouldPasteToTerminal,
 } from './terminalKeybindings';
+import {
+  collectTerminalSearchMatches,
+  getNextTerminalSearchIndex,
+  type TerminalSearchBufferLike,
+  type TerminalSearchMatch,
+} from './terminalSearch';
 import { rpc } from '@/lib/rpc';
+import { APP_SHORTCUTS, normalizeShortcutKey } from '@/hooks/useKeyboardShortcuts';
 
 const SNAPSHOT_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_DATA_WINDOW_BYTES = 128 * 1024 * 1024; // 128 MB soft guardrail
@@ -38,6 +47,20 @@ const SLOW_INPUT_HANDLER_MS = 16;
 const SLOW_INPUT_LOG_THROTTLE_MS = 2_000;
 const IS_MAC_PLATFORM =
   typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+
+// Keys registered as global app shortcuts (Cmd on macOS, Ctrl on Linux/Windows).
+// Used to let these combos pass through xterm to the window-level shortcut handler
+// instead of being consumed by the terminal.
+const APP_CMD_KEYS = new Set(
+  Object.values(APP_SHORTCUTS)
+    .filter((s) => s.modifier === 'cmd')
+    .map((s) => normalizeShortcutKey(s.key))
+);
+const APP_CMD_SHIFT_KEYS = new Set(
+  Object.values(APP_SHORTCUTS)
+    .filter((s) => s.modifier === 'cmd+shift')
+    .map((s) => normalizeShortcutKey(s.key))
+);
 
 // Store viewport positions per terminal ID to preserve scroll position across detach/attach cycles
 const viewportPositions = new Map<string, number>();
@@ -99,6 +122,7 @@ export class TerminalSessionManager {
   private lastSnapshotAt: number | null = null;
   private lastSnapshotReason: 'interval' | 'detach' | 'dispose' | null = null;
   private customFontFamily = '';
+  private customFontSize = 0;
   private themeFontFamily = '';
   private pendingFitFrame: number | null = null;
   private pendingResizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,6 +138,8 @@ export class TerminalSessionManager {
   private lastSlowInputLogAt = 0;
   private terminalConfigFontSize: number | null = null;
   private lastTheme: SessionTheme;
+  private activeSearchQuery = '';
+  private activeSearchMatch: TerminalSearchMatch | null = null;
 
   // Timing for startup performance measurement
   private initStartTime: number = 0;
@@ -164,8 +190,18 @@ export class TerminalSessionManager {
       this.applyEffectiveFont();
     };
 
+    const updateCustomFontSize = (size: number) => {
+      this.customFontSize = size;
+      this.applyTheme(this.lastTheme);
+      this.fitPreservingViewport();
+    };
+
     rpc.appSettings.get().then((settings) => {
       updateCustomFont(settings?.terminal?.fontFamily);
+      const size = settings?.terminal?.fontSize;
+      if (typeof size === 'number' && size >= 8 && size <= 24) {
+        updateCustomFontSize(size);
+      }
       this.autoCopyOnSelection = settings?.terminal?.autoCopyOnSelection ?? false;
     });
 
@@ -187,6 +223,20 @@ export class TerminalSessionManager {
     window.addEventListener('terminal-font-changed', handleFontChange);
     this.disposables.push(() =>
       window.removeEventListener('terminal-font-changed', handleFontChange)
+    );
+
+    const handleFontSizeChange = (e: Event) => {
+      const detail = (e as CustomEvent<{ fontSize?: number }>).detail;
+      const size = detail?.fontSize;
+      if (typeof size === 'number' && size >= 8 && size <= 24) {
+        updateCustomFontSize(size);
+      } else if (size === 0) {
+        updateCustomFontSize(0);
+      }
+    };
+    window.addEventListener('terminal-font-size-changed', handleFontSizeChange);
+    this.disposables.push(() =>
+      window.removeEventListener('terminal-font-size-changed', handleFontSizeChange)
     );
 
     const handleAutoCopyChange = (e: Event) => {
@@ -350,6 +400,16 @@ export class TerminalSessionManager {
           this.handleTerminalInput('\x05', true);
           return false;
         }
+      }
+
+      // Let registered app shortcuts propagate to the global handler.
+      const hasPlatformMod = IS_MAC_PLATFORM
+        ? event.metaKey && !event.ctrlKey
+        : event.ctrlKey && !event.metaKey;
+      if (hasPlatformMod) {
+        const key = normalizeShortcutKey(event.key);
+        if (!event.shiftKey && APP_CMD_KEYS.has(key)) return false;
+        if (event.shiftKey && APP_CMD_SHIFT_KEYS.has(key)) return false;
       }
 
       return true; // Let xterm handle all other keys normally
@@ -545,6 +605,73 @@ export class TerminalSessionManager {
     }
   }
 
+  search(
+    query: string,
+    options: { direction?: 'next' | 'prev'; reset?: boolean } = {}
+  ): {
+    found: boolean;
+    currentIndex: number;
+    total: number;
+  } {
+    const normalizedQuery = query;
+    if (!normalizedQuery) {
+      this.clearSearch();
+      return { found: false, currentIndex: 0, total: 0 };
+    }
+
+    const buffer = this.terminal.buffer?.active as TerminalSearchBufferLike | undefined;
+    if (!buffer) {
+      this.activeSearchQuery = normalizedQuery;
+      this.activeSearchMatch = null;
+      return { found: false, currentIndex: 0, total: 0 };
+    }
+
+    const matches = collectTerminalSearchMatches(buffer, normalizedQuery);
+    if (matches.length === 0) {
+      this.activeSearchQuery = normalizedQuery;
+      this.activeSearchMatch = null;
+      try {
+        this.terminal.clearSelection();
+      } catch {}
+      return { found: false, currentIndex: 0, total: 0 };
+    }
+
+    const direction = options.direction ?? 'next';
+    const currentMatch =
+      !options.reset && this.activeSearchQuery === normalizedQuery ? this.activeSearchMatch : null;
+    const matchIndex = getNextTerminalSearchIndex(matches, currentMatch, direction);
+    const match = matches[matchIndex];
+
+    this.activeSearchQuery = normalizedQuery;
+    this.activeSearchMatch = match;
+
+    try {
+      this.terminal.select(match.col, match.row, match.length);
+      const contextRows = Math.max(0, Math.floor(this.terminal.rows / 2));
+      this.terminal.scrollToLine(Math.max(0, match.row - contextRows));
+    } catch (error) {
+      log.warn('Failed to apply terminal search match', {
+        id: this.id,
+        query: normalizedQuery,
+        error,
+      });
+    }
+
+    return {
+      found: true,
+      currentIndex: matchIndex + 1,
+      total: matches.length,
+    };
+  }
+
+  clearSearch() {
+    this.activeSearchQuery = '';
+    this.activeSearchMatch = null;
+    try {
+      this.terminal.clearSelection();
+    } catch {}
+  }
+
   registerActivityListener(listener: () => void): () => void {
     this.activityListeners.add(listener);
     return () => {
@@ -612,20 +739,38 @@ export class TerminalSessionManager {
       })();
     }
 
-    // Check for pending injection text when Enter is pressed (but not for newline inserts)
+    // Inject pending comments when the user submits a real message.
+    // Guards:
+    //  - Bare Enter presses (TUI confirmations, menu selections) pass through
+    //    because submittedText is empty.
+    //  - Slash commands pass through so comments are preserved for the next
+    //    regular message. We also support one-char TUI mode prefixes like
+    //    "i/model" when classifying slash-command-like input.
     const pendingText = pendingInjectionManager.getPending();
-    if (pendingText && isEnterPress && !isNewlineInsert) {
-      // Append pending text to the existing input and keep the prior working behavior.
-      const stripped = filtered.replace(/[\r\n]+$/g, '');
-      const enterSequence = filtered.includes('\r') ? '\r' : '\n';
-      const injectedData = stripped + pendingText + enterSequence + enterSequence;
-      if (submittedText || pendingText.trim()) {
+    const hasUserMessage = submittedText != null && submittedText.trim().length > 0;
+    if (
+      this.options.providerId &&
+      pendingText &&
+      isEnterPress &&
+      !isNewlineInsert &&
+      hasUserMessage
+    ) {
+      const isSlashCommand = isSlashCommandInput(submittedText);
+      if (!isSlashCommand) {
+        const { payload: injectedData, submitDelayMs } = buildCommentInjectionPayload({
+          providerId: this.options.providerId,
+          inputData: filtered,
+          pendingText,
+        });
         agentStatusStore.markUserInputSubmitted({ ptyId: this.id });
+        window.electronAPI.ptyInput({ id: this.id, data: injectedData });
+        setTimeout(() => {
+          window.electronAPI.ptyInput({ id: this.id, data: '\r' });
+        }, submitDelayMs);
+        pendingInjectionManager.markUsed();
+        this.logSlowInputHandler(startedAt);
+        return;
       }
-      window.electronAPI.ptyInput({ id: this.id, data: injectedData });
-      pendingInjectionManager.markUsed();
-      this.logSlowInputHandler(startedAt);
-      return;
     }
 
     if (isEnterPress && !isNewlineInsert && submittedText) {
@@ -775,10 +920,14 @@ export class TerminalSessionManager {
 
     const fontFamily = (theme.override as any)?.fontFamily;
     const overrideFontSize = (theme.override as any)?.fontSize;
-    const effectiveFontSize =
-      typeof overrideFontSize === 'number' && overrideFontSize > 0
-        ? overrideFontSize
-        : (this.terminalConfigFontSize ?? DEFAULT_FONT_SIZE);
+    let effectiveFontSize: number;
+    if (this.customFontSize >= 8 && this.customFontSize <= 24) {
+      effectiveFontSize = this.customFontSize;
+    } else if (typeof overrideFontSize === 'number' && overrideFontSize > 0) {
+      effectiveFontSize = overrideFontSize;
+    } else {
+      effectiveFontSize = this.terminalConfigFontSize ?? DEFAULT_FONT_SIZE;
+    }
 
     const colorTheme = { ...theme.override };
     delete (colorTheme as any)?.fontFamily;

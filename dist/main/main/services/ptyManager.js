@@ -615,6 +615,12 @@ function buildProviderCliArgs(options) {
     if (options.autoApprove && options.autoApproveFlag) {
         args.push(...parseShellArgs(options.autoApproveFlag));
     }
+    if (options.extraArgs?.length) {
+        args.push(...options.extraArgs);
+    }
+    if (options.runtimeArgs?.length) {
+        args.push(...options.runtimeArgs);
+    }
     if (options.initialPromptFlag !== undefined &&
         !options.useKeystrokeInjection &&
         options.initialPrompt?.trim()) {
@@ -622,9 +628,6 @@ function buildProviderCliArgs(options) {
             args.push(...parseShellArgs(options.initialPromptFlag));
         }
         args.push(options.initialPrompt.trim());
-    }
-    if (options.extraArgs?.length) {
-        args.push(...options.extraArgs);
     }
     return args;
 }
@@ -921,13 +924,13 @@ function startDirectPty(options) {
             resumeFlag: resolvedConfig.resumeFlag,
             defaultArgs: resolvedConfig.defaultArgs,
             extraArgs: resolvedConfig.extraArgs,
+            runtimeArgs: getProviderRuntimeCliArgs({ providerId }),
             autoApprove,
             autoApproveFlag: resolvedConfig.autoApproveFlag,
             initialPrompt,
             initialPromptFlag: resolvedConfig.initialPromptFlag,
             useKeystrokeInjection: provider.useKeystrokeInjection,
         }));
-        cliArgs.push(...getProviderRuntimeCliArgs({ providerId }));
     }
     // Build minimal environment - just what the CLI needs
     const useEnv = {
@@ -1118,13 +1121,13 @@ async function startPty(options) {
                     resumeFlag: resolvedConfig?.resumeFlag,
                     defaultArgs: resolvedConfig?.defaultArgs,
                     extraArgs: resolvedConfig?.extraArgs,
+                    runtimeArgs: getProviderRuntimeCliArgs({ providerId: provider.id }),
                     autoApprove,
                     autoApproveFlag: resolvedConfig?.autoApproveFlag,
                     initialPrompt,
                     initialPromptFlag: resolvedConfig?.initialPromptFlag,
                     useKeystrokeInjection: provider.useKeystrokeInjection,
                 }));
-                cliArgs.push(...getProviderRuntimeCliArgs({ providerId: provider.id }));
                 if (resolvedConfig?.env) {
                     for (const [k, v] of Object.entries(resolvedConfig.env)) {
                         if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof v === 'string') {

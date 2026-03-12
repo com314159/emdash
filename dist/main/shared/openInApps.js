@@ -124,6 +124,7 @@ exports.OPEN_IN_APPS = [
                     'warppreview://action/new_window?path={{path_url}}',
                 ],
                 bundleIds: ['dev.warp.Warp-Stable'],
+                appNames: ['Warp'],
             },
         },
     },

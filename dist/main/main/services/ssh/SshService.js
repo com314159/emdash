@@ -368,7 +368,9 @@ class SshService extends events_1.EventEmitter {
                     try {
                         proc.kill();
                     }
-                    catch { /* ignore */ }
+                    catch {
+                        /* ignore */
+                    }
                     reject(new Error('SSH GSSAPI connection timed out. Check your Kerberos ticket (run kinit) and SSH config.'));
                 }
             }, 20000);
@@ -448,7 +450,17 @@ class SshService extends events_1.EventEmitter {
             console.log(`[SshService] Found ControlPath in SSH config: ${controlPath}`);
             // Check if a ControlMaster is alive at that path
             const checkResult = await new Promise((resolve) => {
-                execFileCb('ssh', ['-O', 'check', '-S', controlPath, '-p', String(config.port), '-l', config.username, config.host], { timeout: 5000, env: { ...process.env } }, (err) => {
+                execFileCb('ssh', [
+                    '-O',
+                    'check',
+                    '-S',
+                    controlPath,
+                    '-p',
+                    String(config.port),
+                    '-l',
+                    config.username,
+                    config.host,
+                ], { timeout: 5000, env: { ...process.env } }, (err) => {
                     resolve(!err);
                 });
             });

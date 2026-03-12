@@ -96,6 +96,18 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
         electron_1.ipcRenderer.on(channel, wrapped);
         return () => electron_1.ipcRenderer.removeListener(channel, wrapped);
     },
+    onPtyActivity: (listener) => {
+        const channel = 'pty:activity';
+        const wrapped = (_, data) => listener(data);
+        electron_1.ipcRenderer.on(channel, wrapped);
+        return () => electron_1.ipcRenderer.removeListener(channel, wrapped);
+    },
+    onPtyExitGlobal: (listener) => {
+        const channel = 'pty:exit:global';
+        const wrapped = (_, data) => listener(data);
+        electron_1.ipcRenderer.on(channel, wrapped);
+        return () => electron_1.ipcRenderer.removeListener(channel, wrapped);
+    },
     onAgentEvent: (listener) => {
         const channel = 'agent:event';
         const wrapped = (_, data, meta) => listener(data, meta);
@@ -313,6 +325,12 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     plainClearToken: () => electron_1.ipcRenderer.invoke('plain:clearToken'),
     plainInitialFetch: (limit, statuses) => electron_1.ipcRenderer.invoke('plain:initialFetch', limit, statuses),
     plainSearchThreads: (searchTerm, limit) => electron_1.ipcRenderer.invoke('plain:searchThreads', searchTerm, limit),
+    // Forgejo integration
+    forgejoSaveCredentials: (args) => electron_1.ipcRenderer.invoke('forgejo:saveCredentials', args),
+    forgejoClearCredentials: () => electron_1.ipcRenderer.invoke('forgejo:clearCredentials'),
+    forgejoCheckConnection: () => electron_1.ipcRenderer.invoke('forgejo:checkConnection'),
+    forgejoInitialFetch: (projectPath, limit) => electron_1.ipcRenderer.invoke('forgejo:initialFetch', { projectPath, limit }),
+    forgejoSearchIssues: (projectPath, searchTerm, limit) => electron_1.ipcRenderer.invoke('forgejo:searchIssues', { projectPath, searchTerm, limit }),
     getProviderStatuses: (opts) => electron_1.ipcRenderer.invoke('providers:getStatuses', opts ?? {}),
     getProviderCustomConfig: (providerId) => electron_1.ipcRenderer.invoke('providers:getCustomConfig', providerId),
     getAllProviderCustomConfigs: () => electron_1.ipcRenderer.invoke('providers:getAllCustomConfigs'),

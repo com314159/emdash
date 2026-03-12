@@ -2,6 +2,8 @@
 
 import type { AgentEvent } from '../../shared/agentEvents';
 import type { AutoMergeRequest } from '../lib/prStatus';
+import type { DiffPayload } from '../../shared/diff/types';
+import type { GitIndexUpdateArgs } from '../../shared/git/types';
 
 type ProjectSettingsPayload = {
   projectId: string;
@@ -10,18 +12,6 @@ type ProjectSettingsPayload = {
   gitRemote?: string;
   gitBranch?: string;
   baseRef?: string;
-};
-
-export type LineComment = {
-  id: string;
-  taskId: string;
-  filePath: string;
-  lineNumber: number;
-  lineContent?: string | null;
-  content: string;
-  createdAt: string;
-  updatedAt: string;
-  sentAt?: string | null;
 };
 
 export type ProviderCustomConfig = {
@@ -208,6 +198,10 @@ declare global {
         projectPath: string;
         baseRef?: string;
       }) => Promise<{ success: boolean; error?: string }>;
+      worktreePreflightReserve: (args: {
+        projectId: string;
+        projectPath: string;
+      }) => Promise<{ success: boolean; error?: string }>;
       worktreeHasReserve: (args: {
         projectId: string;
       }) => Promise<{ success: boolean; hasReserve?: boolean; error?: string }>;
@@ -355,8 +349,8 @@ declare global {
         changes?: Array<{
           path: string;
           status: string;
-          additions: number;
-          deletions: number;
+          additions: number | null;
+          deletions: number | null;
           isStaged: boolean;
           diff?: string;
         }>;
@@ -403,35 +397,23 @@ declare global {
       onGitStatusChanged: (
         listener: (data: { taskPath: string; error?: string }) => void
       ) => () => void;
-      getFileDiff: (args: { taskPath: string; filePath: string; baseRef?: string }) => Promise<{
+      getFileDiff: (args: {
+        taskPath: string;
+        filePath: string;
+        baseRef?: string;
+        forceLarge?: boolean;
+      }) => Promise<{
         success: boolean;
-        diff?: {
-          lines: Array<{
-            left?: string;
-            right?: string;
-            type: 'context' | 'add' | 'del';
-          }>;
-          isBinary?: boolean;
-          originalContent?: string;
-          modifiedContent?: string;
-        };
+        diff?: DiffPayload;
         error?: string;
       }>;
-      stageFile: (args: { taskPath: string; filePath: string }) => Promise<{
-        success: boolean;
-        error?: string;
-      }>;
-      stageAllFiles: (args: { taskPath: string }) => Promise<{
-        success: boolean;
-        error?: string;
-      }>;
-      unstageFile: (args: { taskPath: string; filePath: string }) => Promise<{
+      updateIndex: (args: { taskPath: string } & GitIndexUpdateArgs) => Promise<{
         success: boolean;
         error?: string;
       }>;
       revertFile: (args: { taskPath: string; filePath: string }) => Promise<{
         success: boolean;
-        action?: 'unstaged' | 'reverted';
+        action?: 'reverted';
         error?: string;
       }>;
       gitCommit: (args: { taskPath: string; message: string }) => Promise<{
@@ -493,14 +475,10 @@ declare global {
         taskPath: string;
         commitHash: string;
         filePath: string;
+        forceLarge?: boolean;
       }) => Promise<{
         success: boolean;
-        diff?: {
-          lines: Array<{ left?: string; right?: string; type: 'context' | 'add' | 'del' }>;
-          isBinary?: boolean;
-          originalContent?: string;
-          modifiedContent?: string;
-        };
+        diff?: DiffPayload;
         error?: string;
       }>;
       gitSoftReset: (args: { taskPath: string }) => Promise<{
@@ -777,6 +755,24 @@ declare global {
         relPath: string,
         remote?: { connectionId: string; remotePath: string }
       ) => Promise<{ success: boolean; error?: string }>;
+
+      fsRename: (
+        root: string,
+        oldName: string,
+        newName: string,
+        remote?: { connectionId: string; remotePath: string }
+      ) => Promise<{ success: boolean; error?: string }>;
+      fsMkdir: (
+        root: string,
+        relPath: string,
+        remote?: { connectionId: string; remotePath: string }
+      ) => Promise<{ success: boolean; error?: string }>;
+      fsRmdir: (
+        root: string,
+        relPath: string,
+        remote?: { connectionId: string; remotePath: string }
+      ) => Promise<{ success: boolean; error?: string }>;
+
       getProjectConfig: (
         projectPath: string
       ) => Promise<{ success: boolean; path?: string; content?: string; error?: string }>;
@@ -1061,46 +1057,6 @@ declare global {
         content: string,
         options?: { reset?: boolean }
       ) => Promise<{ success: boolean; error?: string }>;
-
-      // Line comments
-      lineCommentsGet: (args: { taskId: string; filePath?: string }) => Promise<{
-        success: boolean;
-        comments?: LineComment[];
-        error?: string;
-      }>;
-      lineCommentsCreate: (args: {
-        taskId: string;
-        filePath: string;
-        lineNumber: number;
-        lineContent?: string;
-        content: string;
-      }) => Promise<{
-        success: boolean;
-        id?: string;
-        error?: string;
-      }>;
-      lineCommentsUpdate: (args: { id: string; content: string }) => Promise<{
-        success: boolean;
-        error?: string;
-      }>;
-      lineCommentsDelete: (id: string) => Promise<{
-        success: boolean;
-        error?: string;
-      }>;
-      lineCommentsGetFormatted: (taskId: string) => Promise<{
-        success: boolean;
-        formatted?: string;
-        error?: string;
-      }>;
-      lineCommentsMarkSent: (commentIds: string[]) => Promise<{
-        success: boolean;
-        error?: string;
-      }>;
-      lineCommentsGetUnsent: (taskId: string) => Promise<{
-        success: boolean;
-        comments?: LineComment[];
-        error?: string;
-      }>;
 
       // SSH operations
       sshTestConnection: (config: {
@@ -1835,46 +1791,6 @@ export interface ElectronAPI {
     content: string,
     options?: { reset?: boolean }
   ) => Promise<{ success: boolean; error?: string }>;
-
-  // Line comments
-  lineCommentsGet: (args: { taskId: string; filePath?: string }) => Promise<{
-    success: boolean;
-    comments?: LineComment[];
-    error?: string;
-  }>;
-  lineCommentsCreate: (args: {
-    taskId: string;
-    filePath: string;
-    lineNumber: number;
-    lineContent?: string;
-    content: string;
-  }) => Promise<{
-    success: boolean;
-    id?: string;
-    error?: string;
-  }>;
-  lineCommentsUpdate: (args: { id: string; content: string }) => Promise<{
-    success: boolean;
-    error?: string;
-  }>;
-  lineCommentsDelete: (id: string) => Promise<{
-    success: boolean;
-    error?: string;
-  }>;
-  lineCommentsGetFormatted: (taskId: string) => Promise<{
-    success: boolean;
-    formatted?: string;
-    error?: string;
-  }>;
-  lineCommentsMarkSent: (commentIds: string[]) => Promise<{
-    success: boolean;
-    error?: string;
-  }>;
-  lineCommentsGetUnsent: (taskId: string) => Promise<{
-    success: boolean;
-    comments?: LineComment[];
-    error?: string;
-  }>;
 
   // Skills management
   skillsGetCatalog: () => Promise<{

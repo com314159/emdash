@@ -4,6 +4,7 @@ exports.registerAppIpc = registerAppIpc;
 const electron_1 = require("electron");
 const child_process_1 = require("child_process");
 const promises_1 = require("fs/promises");
+const os_1 = require("os");
 const path_1 = require("path");
 const ProjectPrep_1 = require("../services/ProjectPrep");
 const settings_1 = require("../settings");
@@ -293,14 +294,36 @@ function registerAppIpc() {
                         return { success: true };
                     }
                     else if (appId === 'warp' && platform === 'darwin') {
-                        // Warp - use URL scheme with SSH command
+                        // Warp URI scheme does not support a `cmd` parameter.
+                        // Instead, write a temporary Launch Configuration YAML and
+                        // trigger it via the warp://launch/<name> deep link.
                         const sshCommand = (0, remoteOpenIn_1.buildRemoteSshCommand)({
                             host: connection.host,
                             username: connection.username,
                             port: connection.port,
                             targetPath: target,
                         });
-                        await electron_1.shell.openExternal(`warp://action/new_window?cmd=${encodeURIComponent(sshCommand)}`);
+                        const configId = `emdash-ssh-${Date.now()}`;
+                        const configDir = (0, path_1.join)((0, os_1.homedir)(), '.warp', 'launch_configurations');
+                        const configPath = (0, path_1.join)(configDir, `${configId}.yaml`);
+                        // Escape for YAML double-quoted string
+                        const yamlCmd = sshCommand.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                        const yaml = [
+                            '---',
+                            `name: ${configId}`,
+                            'windows:',
+                            '  - tabs:',
+                            `      - title: "SSH - ${connection.host}"`,
+                            '        layout:',
+                            '          cwd: ""',
+                            '          commands:',
+                            `            - exec: "${yamlCmd}"`,
+                        ].join('\n');
+                        await (0, promises_1.mkdir)(configDir, { recursive: true });
+                        await (0, promises_1.writeFile)(configPath, yaml, 'utf-8');
+                        await electron_1.shell.openExternal(`warp://launch/${configId}`);
+                        // Clean up temp config after Warp has read it
+                        setTimeout(() => (0, promises_1.unlink)(configPath).catch(() => { }), 15000);
                         return { success: true };
                     }
                     else if (appId === 'ghostty') {
