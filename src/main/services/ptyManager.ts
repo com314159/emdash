@@ -509,7 +509,9 @@ export function applySessionIsolation(
   cwd: string,
   isResume: boolean,
   /** Stable task ID passed from the renderer. Survives conversation ID changes across restarts. */
-  ownerTaskId?: string
+  ownerTaskId?: string,
+  /** When true, skip local disk validation for session files (they live on the remote machine). */
+  isRemote?: boolean
 ): boolean {
   if (!provider.sessionIdFlag) return false;
 
@@ -576,7 +578,7 @@ export function applySessionIsolation(
     // Skip disk validation for recovered sessions (conversation ID changed
     // but session is valid) and for remote projects (session files are on
     // the remote machine, not locally accessible).
-    if (provider.id === 'claude' && !recoveredSession) {
+    if (provider.id === 'claude' && !recoveredSession && !isRemote) {
       const isStale = knownEntry!.cwd !== cwd || !claudeSessionFileExists(effectiveSession, cwd);
       if (isStale) {
         log.warn('ptyManager: stale session detected, creating new session', {

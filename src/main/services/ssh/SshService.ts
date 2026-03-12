@@ -331,8 +331,11 @@ export class SshService extends EventEmitter {
       // Ignore if doesn't exist
     }
 
+    // Don't use -f (background after auth) — it can hang on some systems when
+    // stdio is piped because the forked child keeps pipe references open and
+    // the 'close' event never fires.  Instead keep the process alive and poll
+    // for the ControlMaster socket to become ready.
     const sshArgs = [
-      '-f', // Go to background after auth
       '-N', // No remote command
       '-M', // ControlMaster mode
       '-S',
@@ -397,35 +400,73 @@ export class SshService extends EventEmitter {
         console.log(`[SshService] connectGssapi stderr: ${chunk.trim()}`);
       });
 
-      // ssh -f will exit after backgrounding if auth succeeds.
-      // If it exits with code 0, the ControlMaster is running.
+      // Poll for the ControlMaster socket to become ready.
+      // The ssh process stays alive (no -f), so we detect readiness by
+      // checking the socket file exists and responds to `ssh -O check`.
+      const pollInterval = setInterval(() => {
+        if (settled) {
+          clearInterval(pollInterval);
+          return;
+        }
+        try {
+          const { statSync } = require('fs');
+          statSync(socketPath);
+        } catch {
+          return; // Socket doesn't exist yet
+        }
+        // Socket file exists — verify the master is alive
+        execFile(
+          'ssh',
+          [
+            '-O',
+            'check',
+            '-S',
+            socketPath,
+            '-p',
+            String(config.port),
+            '-l',
+            config.username,
+            config.host,
+          ],
+          { timeout: 3000, env: { ...process.env } },
+          (err) => {
+            if (settled) return;
+            if (!err) {
+              settled = true;
+              clearTimeout(timeout);
+              clearInterval(pollInterval);
+              console.log(`[SshService] connectGssapi: ControlMaster ready at ${socketPath}`);
+              const gssapiConn: GssapiConnection = {
+                id: connectionId,
+                config,
+                controlSocketPath: socketPath,
+                connectedAt: new Date(),
+                lastActivity: new Date(),
+              };
+              this.gssapiConnections.set(connectionId, gssapiConn);
+              this.emit('connected', connectionId);
+              resolve(connectionId);
+            }
+          }
+        );
+      }, 300);
+
+      // If the process exits unexpectedly (auth failure), reject immediately.
       proc.on('close', (code) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        clearInterval(pollInterval);
         console.log(`[SshService] connectGssapi: ssh exited with code ${code}`);
-
-        if (code === 0) {
-          const gssapiConn: GssapiConnection = {
-            id: connectionId,
-            config,
-            controlSocketPath: socketPath,
-            connectedAt: new Date(),
-            lastActivity: new Date(),
-          };
-          this.gssapiConnections.set(connectionId, gssapiConn);
-          this.emit('connected', connectionId);
-          resolve(connectionId);
-        } else {
-          const errorMsg = stderr.trim() || `SSH GSSAPI authentication failed (exit code ${code})`;
-          reject(new Error(errorMsg));
-        }
+        const errorMsg = stderr.trim() || `SSH GSSAPI authentication failed (exit code ${code})`;
+        reject(new Error(errorMsg));
       });
 
       proc.on('error', (err) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        clearInterval(pollInterval);
         reject(new Error(`Failed to spawn ssh: ${err.message}`));
       });
 

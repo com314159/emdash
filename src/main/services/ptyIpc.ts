@@ -574,7 +574,15 @@ function buildRemoteProviderInvocation(args: {
   // to avoid conflicts. This mirrors the logic in startDirectPty/startPty.
   let usedSessionIsolation = false;
   if (id && cwd && provider) {
-    usedSessionIsolation = applySessionIsolation(cliArgs, provider, id, cwd, !!resume, ownerTaskId);
+    usedSessionIsolation = applySessionIsolation(
+      cliArgs,
+      provider,
+      id,
+      cwd,
+      !!resume,
+      ownerTaskId,
+      true
+    );
   }
 
   cliArgs.push(

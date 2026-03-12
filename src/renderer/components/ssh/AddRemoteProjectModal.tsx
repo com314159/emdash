@@ -90,6 +90,7 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
   // Wizard state
   const [currentStep, setCurrentStep] = useState<WizardStep>('connection');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [testStatus, setTestStatus] = useState<TestStatus>('idle');
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
@@ -588,13 +589,16 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
     if (!validateStep(currentStep)) return;
 
     if (currentStep === 'auth') {
-      // Test connection before proceeding
-      console.log('[AddRemoteProject] Testing connection...');
-      const success = await testConnection();
-      console.log('[AddRemoteProject] Test result:', success);
-      if (!success) return;
+      // Test connection before proceeding (skip re-test if already successful)
+      if (testStatus !== 'success') {
+        console.log('[AddRemoteProject] Testing connection...');
+        const success = await testConnection();
+        console.log('[AddRemoteProject] Test result:', success);
+        if (!success) return;
+      }
 
       // Create connection for browsing
+      setIsConnecting(true);
       try {
         const connectConfig: SshConfig & { password?: string; passphrase?: string } = {
           name: formData.name,
@@ -650,11 +654,13 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
       } catch (error) {
         console.error('[AddRemoteProject] sshConnect error:', error);
         const message = error instanceof Error ? error.message : 'Failed to connect';
+        setIsConnecting(false);
         setTestStatus('idle');
         setTestResult(null);
         setErrors((prev) => ({ ...prev, general: message }));
         return;
       }
+      setIsConnecting(false);
       console.log('[AddRemoteProject] Auth step completed, advancing to next step');
     }
 
@@ -1681,7 +1687,7 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
             onClick={() => void handleNext()}
             disabled={
               isSubmitting ||
-              (currentStep === 'auth' && testStatus === 'testing') ||
+              (currentStep === 'auth' && (testStatus === 'testing' || isConnecting)) ||
               isCreatingRepo ||
               isCloningRepo
             }
@@ -1690,6 +1696,11 @@ export const AddRemoteProjectModal: React.FC<AddRemoteProjectModalProps> = ({
               <>
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
                 Testing...
+              </>
+            ) : isConnecting ? (
+              <>
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                Connecting...
               </>
             ) : isCreatingRepo ? (
               <>

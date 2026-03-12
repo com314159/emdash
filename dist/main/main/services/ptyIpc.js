@@ -498,7 +498,7 @@ function buildRemoteProviderInvocation(args) {
     // to avoid conflicts. This mirrors the logic in startDirectPty/startPty.
     let usedSessionIsolation = false;
     if (id && cwd && provider) {
-        usedSessionIsolation = (0, ptyManager_1.applySessionIsolation)(cliArgs, provider, id, cwd, !!resume, ownerTaskId);
+        usedSessionIsolation = (0, ptyManager_1.applySessionIsolation)(cliArgs, provider, id, cwd, !!resume, ownerTaskId, true);
     }
     cliArgs.push(...(0, ptyManager_1.buildProviderCliArgs)({
         resume: !usedSessionIsolation && !!resume,
@@ -1016,7 +1016,7 @@ function registerPtyIpc() {
             return { ok: false, error: 'PTY disabled via EMDASH_DISABLE_PTY=1' };
         }
         try {
-            const { id, providerId, cwd, remote, cols, rows, autoApprove, initialPrompt, env, resume, ownerTaskId } = args;
+            const { id, providerId, cwd, remote, cols, rows, autoApprove, initialPrompt, env, resume, ownerTaskId, } = args;
             const existing = (0, ptyManager_1.getPty)(id);
             if (remote?.connectionId) {
                 const wc = event.sender;
