@@ -405,7 +405,17 @@ class SshService extends events_1.EventEmitter {
                     return; // Socket doesn't exist yet
                 }
                 // Socket file exists — verify the master is alive
-                (0, child_process_1.execFile)('ssh', ['-O', 'check', '-S', socketPath, '-p', String(config.port), '-l', config.username, config.host], { timeout: 3000, env: { ...process.env } }, (err) => {
+                (0, child_process_1.execFile)('ssh', [
+                    '-O',
+                    'check',
+                    '-S',
+                    socketPath,
+                    '-p',
+                    String(config.port),
+                    '-l',
+                    config.username,
+                    config.host,
+                ], { timeout: 3000, env: { ...process.env } }, (err) => {
                     if (settled)
                         return;
                     if (!err) {

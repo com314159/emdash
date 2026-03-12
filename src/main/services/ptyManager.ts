@@ -529,6 +529,24 @@ export function applySessionIsolation(
     (parsed.kind === 'main' ? parsed.suffix : undefined) ||
     loadSessionMap()[id]?.taskId;
 
+  // ── Remote shortcut ──────────────────────────────────────────────────
+  // For remote projects we can't validate session files on disk (they live
+  // on the remote machine) and reusing deterministic UUIDs causes
+  // "Session ID already in use" when multiple tasks share a directory.
+  // The simplest, most reliable approach: always start a fresh session
+  // with a random UUID.  No need to kill stale processes.
+  if (isRemote) {
+    const freshUuid = crypto.randomUUID();
+    cliArgs.push(provider.sessionIdFlag, freshUuid);
+    markClaudeSessionCreated(id, freshUuid, cwd, taskId);
+    log.info('ptyManager: remote session — using fresh UUID', {
+      ptyId: id,
+      uuid: freshUuid,
+    });
+    return true;
+  }
+  // ── End remote shortcut ──────────────────────────────────────────────
+
   const knownEntry = getNormalizedSessionEntry(id, loadSessionMap()[id]);
   const knownSession =
     knownEntry?.providerId === provider.id && knownEntry.strategy === 'claude-session-id'
@@ -576,9 +594,8 @@ export function applySessionIsolation(
     // Also treat cwd mismatch as stale — the session belongs to a different
     // project context and Claude would look in the wrong directory.
     // Skip disk validation for recovered sessions (conversation ID changed
-    // but session is valid) and for remote projects (session files are on
-    // the remote machine, not locally accessible).
-    if (provider.id === 'claude' && !recoveredSession && !isRemote) {
+    // but session is valid).
+    if (provider.id === 'claude' && !recoveredSession) {
       const isStale = knownEntry!.cwd !== cwd || !claudeSessionFileExists(effectiveSession, cwd);
       if (isStale) {
         log.warn('ptyManager: stale session detected, creating new session', {

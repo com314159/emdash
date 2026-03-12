@@ -569,9 +569,10 @@ function buildRemoteProviderInvocation(args: {
   const cliArgs: string[] = [];
 
   // Apply per-task session isolation FIRST, before generic resume flags.
-  // When session isolation succeeds (returns true), it adds --resume <uuid> or
-  // --session-id <uuid>, and we must skip the generic resume flag (e.g. -c -r)
-  // to avoid conflicts. This mirrors the logic in startDirectPty/startPty.
+  // When session isolation succeeds (returns true), it adds --session-id <uuid>,
+  // and we must skip the generic resume flag (e.g. -c -r) to avoid conflicts.
+  // For remote sessions, applySessionIsolation always generates a fresh random
+  // UUID — no session recovery, no "already in use" conflicts.
   let usedSessionIsolation = false;
   if (id && cwd && provider) {
     usedSessionIsolation = applySessionIsolation(
