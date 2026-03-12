@@ -255,6 +255,8 @@ type SessionEntry = {
   uuid?: string;
   resumeTarget?: string;
   strategy?: SessionStrategy;
+  /** Task ID that owns this session. Used to scope multi-chat discovery to the same task. */
+  taskId?: string;
 };
 
 type NormalizedSessionEntry = {
@@ -262,6 +264,7 @@ type NormalizedSessionEntry = {
   providerId: string;
   target: string;
   strategy: SessionStrategy;
+  taskId?: string;
 };
 
 let _sessionMapPath: string | null = null;
@@ -304,11 +307,16 @@ function getNormalizedSessionEntry(
   const providerId = entry.providerId || parsed?.providerId;
   if (!providerId) return null;
 
+  // Resolve the taskId: prefer persisted value, fall back to parsing the ptyId
+  // for main PTYs (where suffix IS the taskId).
+  const taskId = entry.taskId || (parsed?.kind === 'main' ? parsed.suffix : undefined);
+
   if (typeof entry.resumeTarget === 'string' && entry.resumeTarget.trim()) {
     return {
       cwd: entry.cwd,
       providerId,
       target: entry.resumeTarget,
+      taskId,
       strategy:
         entry.strategy === 'claude-session-id' || entry.strategy === 'codex-thread-id'
           ? entry.strategy
@@ -323,6 +331,7 @@ function getNormalizedSessionEntry(
       cwd: entry.cwd,
       providerId,
       target: entry.uuid,
+      taskId,
       strategy: 'claude-session-id',
     };
   }
@@ -330,13 +339,27 @@ function getNormalizedSessionEntry(
   return null;
 }
 
-/** Check if the session map has entries for other chats of the same provider in the same cwd. */
-function hasOtherSameProviderSessions(ptyId: string, providerId: string, cwd: string): boolean {
+/**
+ * Check if the session map has entries for other chats of the same provider
+ * **within the same task** (same cwd + taskId).
+ *
+ * Previously this matched on (providerId, cwd) only, which caused different
+ * tasks in the same project to wrongly discover each other's sessions.
+ */
+function hasOtherSameProviderSessions(
+  ptyId: string,
+  providerId: string,
+  cwd: string,
+  taskId: string | undefined
+): boolean {
   const map = loadSessionMap();
   return Object.entries(map).some(([key, entry]) => {
     if (key === ptyId) return false;
     const normalized = getNormalizedSessionEntry(key, entry);
-    return normalized?.providerId === providerId && normalized.cwd === cwd;
+    if (!normalized || normalized.providerId !== providerId || normalized.cwd !== cwd) return false;
+    // Scope to the same task: if both sides have a taskId, they must match.
+    if (taskId && normalized.taskId && normalized.taskId !== taskId) return false;
+    return true;
   });
 }
 
@@ -354,12 +377,13 @@ function setSessionEntry(ptyId: string, entry: SessionEntry): void {
   persistSessionMap();
 }
 
-function markClaudeSessionCreated(ptyId: string, uuid: string, cwd: string): void {
+function markClaudeSessionCreated(ptyId: string, uuid: string, cwd: string, taskId?: string): void {
   setSessionEntry(ptyId, {
     cwd,
     providerId: 'claude',
     uuid,
     strategy: 'claude-session-id',
+    taskId,
   });
 }
 
@@ -445,20 +469,23 @@ function discoverExistingClaudeSession(cwd: string, excludeUuids: Set<string>): 
   }
 }
 
-/** Collect all session UUIDs from the map that belong to a given provider in the same cwd, excluding one PTY. */
-function getOtherSessionUuids(ptyId: string, providerId: string, cwd: string): Set<string> {
+/** Collect all session UUIDs from the map that belong to a given provider within the same task, excluding one PTY. */
+function getOtherSessionUuids(
+  ptyId: string,
+  providerId: string,
+  cwd: string,
+  taskId: string | undefined
+): Set<string> {
   const map = loadSessionMap();
   const uuids = new Set<string>();
   for (const [key, entry] of Object.entries(map)) {
     if (key === ptyId) continue;
     const normalized = getNormalizedSessionEntry(key, entry);
-    if (
-      normalized?.providerId === providerId &&
-      normalized.cwd === cwd &&
-      normalized.strategy === 'claude-session-id'
-    ) {
-      uuids.add(normalized.target);
-    }
+    if (!normalized || normalized.providerId !== providerId || normalized.cwd !== cwd) continue;
+    if (normalized.strategy !== 'claude-session-id') continue;
+    // Scope to the same task
+    if (taskId && normalized.taskId && normalized.taskId !== taskId) continue;
+    uuids.add(normalized.target);
   }
   return uuids;
 }
@@ -489,6 +516,10 @@ export function applySessionIsolation(
 
   const sessionUuid = deterministicUuid(parsed.suffix);
   const isAdditionalChat = parsed.kind === 'chat';
+
+  // Resolve the owning taskId so multi-chat discovery is scoped per-task,
+  // preventing different tasks in the same project from sharing sessions.
+  const taskId = parsed.kind === 'main' ? parsed.suffix : loadSessionMap()[id]?.taskId;
 
   const knownEntry = getNormalizedSessionEntry(id, loadSessionMap()[id]);
   const knownSession =
@@ -521,21 +552,22 @@ export function applySessionIsolation(
 
   if (isAdditionalChat) {
     cliArgs.push(provider.sessionIdFlag, sessionUuid);
-    markClaudeSessionCreated(id, sessionUuid, cwd);
+    markClaudeSessionCreated(id, sessionUuid, cwd, taskId);
     return true;
   }
 
-  if (hasOtherSameProviderSessions(id, parsed.providerId, cwd)) {
+  if (hasOtherSameProviderSessions(id, parsed.providerId, cwd, taskId)) {
     // Main chat transitioning to multi-chat mode. Try to discover its
     // existing session from Claude's local storage and adopt it.
-    const otherUuids = getOtherSessionUuids(id, parsed.providerId, cwd);
+    // Scoped to the same task — different tasks won't cross-pollinate.
+    const otherUuids = getOtherSessionUuids(id, parsed.providerId, cwd, taskId);
     const existingSession = discoverExistingClaudeSession(cwd, otherUuids);
     if (existingSession) {
       cliArgs.push(provider.sessionIdFlag, existingSession);
-      markClaudeSessionCreated(id, existingSession, cwd);
+      markClaudeSessionCreated(id, existingSession, cwd, taskId);
     } else {
       cliArgs.push(provider.sessionIdFlag, sessionUuid);
-      markClaudeSessionCreated(id, sessionUuid, cwd);
+      markClaudeSessionCreated(id, sessionUuid, cwd, taskId);
     }
     return true;
   }
@@ -544,7 +576,7 @@ export function applySessionIsolation(
     // First-time creation — proactively assign a session ID so we can
     // reliably resume later if more chats of this provider are added.
     cliArgs.push(provider.sessionIdFlag, sessionUuid);
-    markClaudeSessionCreated(id, sessionUuid, cwd);
+    markClaudeSessionCreated(id, sessionUuid, cwd, taskId);
     return true;
   }
 
