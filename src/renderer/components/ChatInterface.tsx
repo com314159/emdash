@@ -1149,7 +1149,7 @@ const ChatInterface: React.FC<Props> = ({
           </div>
           <div className="mt-4 min-h-0 flex-1 px-6">
             <div
-              className={`mx-auto h-full max-w-4xl overflow-hidden rounded-md ${
+              className={`mx-auto h-full overflow-hidden rounded-md ${
                 agent === 'charm'
                   ? effectiveTheme === 'dark-black'
                     ? 'bg-black'
