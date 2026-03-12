@@ -5,6 +5,7 @@ const child_process_1 = require("child_process");
 const util_1 = require("util");
 const logger_1 = require("../lib/logger");
 const registry_1 = require("../../shared/providers/registry");
+const stripAnsi_1 = require("@shared/text/stripAnsi");
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
 /**
  * Generates PR title and description using available CLI agents or fallback heuristics
@@ -363,14 +364,6 @@ Respond with ONLY valid JSON — no markdown fences, no preamble, no explanation
 }`;
     }
     /**
-     * Strip ANSI escape sequences from a string
-     */
-    stripAnsi(text) {
-        // Covers CSI sequences, OSC sequences, and other common escape codes
-        // eslint-disable-next-line no-control-regex
-        return text.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[^[(\x1b]*?[a-zA-Z]/g, '');
-    }
-    /**
      * Parse provider response into PR content.
      *
      * Multi-step extraction:
@@ -383,7 +376,7 @@ Respond with ONLY valid JSON — no markdown fences, no preamble, no explanation
     parseProviderResponse(response) {
         try {
             // Step 1: Strip ANSI escape sequences
-            let text = this.stripAnsi(response);
+            let text = (0, stripAnsi_1.stripAnsi)(response, { stripOscSt: true, stripOtherEscapes: true });
             // Step 2: If this is a Claude --output-format json envelope, extract the result field
             try {
                 const envelope = JSON.parse(text);

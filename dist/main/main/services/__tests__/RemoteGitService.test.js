@@ -307,6 +307,21 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
             const result = await service.getStatusDetailed('conn-1', '/home/user/project');
             (0, vitest_1.expect)(result).toEqual([]);
         });
+        (0, vitest_1.it)('throws when porcelain v2 and v1 both fail', async () => {
+            mockExecuteCommand
+                .mockResolvedValueOnce({ stdout: 'true', stderr: '', exitCode: 0 }) // rev-parse
+                .mockResolvedValueOnce({
+                stdout: '',
+                stderr: 'unsupported option',
+                exitCode: 2,
+            }) // status v2
+                .mockResolvedValueOnce({
+                stdout: '',
+                stderr: 'fatal: not a git repository',
+                exitCode: 128,
+            }); // status v1
+            await (0, vitest_1.expect)(service.getStatusDetailed('conn-1', '/home/user/project')).rejects.toThrow('fatal: not a git repository');
+        });
         (0, vitest_1.it)('should parse status with additions/deletions from numstat', async () => {
             mockExecuteCommand
                 .mockResolvedValueOnce({ stdout: 'true', stderr: '', exitCode: 0 }) // rev-parse
@@ -380,26 +395,47 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
             (0, vitest_1.expect)(result[0].status).toBe('renamed');
             (0, vitest_1.expect)(result[0].isStaged).toBe(true);
         });
+        (0, vitest_1.it)('preserves unknown numstat values as null', async () => {
+            mockExecuteCommand
+                .mockResolvedValueOnce({ stdout: 'true', stderr: '', exitCode: 0 })
+                .mockResolvedValueOnce({
+                stdout: ' M binary.png\n',
+                stderr: '',
+                exitCode: 0,
+            })
+                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
+                .mockResolvedValueOnce({
+                stdout: '-\t-\tbinary.png\n',
+                stderr: '',
+                exitCode: 0,
+            });
+            const result = await service.getStatusDetailed('conn-1', '/home/user/project');
+            (0, vitest_1.expect)(result).toHaveLength(1);
+            (0, vitest_1.expect)(result[0].path).toBe('binary.png');
+            (0, vitest_1.expect)(result[0].additions).toBeNull();
+            (0, vitest_1.expect)(result[0].deletions).toBeNull();
+        });
     });
     (0, vitest_1.describe)('getFileDiff', () => {
         (0, vitest_1.it)('should parse unified diff output', async () => {
             mockExecuteCommand
                 .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nhello\nold line\nworld\n',
+                stderr: '',
+                exitCode: 0,
+            }) // HEAD:file
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nhello\nnew line\nworld\n',
+                stderr: '',
+                exitCode: 0,
+            }) // working file
+                .mockResolvedValueOnce({
                 stdout: 'diff --git a/file.ts b/file.ts\nindex abc..def 100644\n--- a/file.ts\n+++ b/file.ts\n@@ -1,3 +1,3 @@\n hello\n-old line\n+new line\n world\n',
                 stderr: '',
                 exitCode: 0,
-            }) // git diff
-                .mockResolvedValueOnce({
-                stdout: 'hello\nold line\nworld\n',
-                stderr: '',
-                exitCode: 0,
-            }) // git show HEAD:file
-                .mockResolvedValueOnce({
-                stdout: 'hello\nnew line\nworld\n',
-                stderr: '',
-                exitCode: 0,
-            }); // cat file
+            }); // git diff
             const result = await service.getFileDiff('conn-1', '/home/user/project', 'file.ts');
+            (0, vitest_1.expect)(result.mode).toBe('text');
             (0, vitest_1.expect)(result.lines).toHaveLength(4);
             (0, vitest_1.expect)(result.lines[0]).toEqual({ left: 'hello', right: 'hello', type: 'context' });
             (0, vitest_1.expect)(result.lines[1]).toEqual({ left: 'old line', type: 'del' });
@@ -410,14 +446,19 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
         });
         (0, vitest_1.it)('should handle untracked file (no diff, read content)', async () => {
             mockExecuteCommand
-                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 })
-                .mockResolvedValueOnce({ stdout: '', stderr: 'not found', exitCode: 128 })
                 .mockResolvedValueOnce({
-                stdout: 'line1\nline2\nline3\n',
+                stdout: '__EMDASH_MISSING__\n',
                 stderr: '',
                 exitCode: 0,
-            }); // cat fallback
+            }) // HEAD:file missing
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nline1\nline2\nline3\n',
+                stderr: '',
+                exitCode: 0,
+            }) // working file
+                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 }); // git diff
             const result = await service.getFileDiff('conn-1', '/home/user/project', 'newfile.txt');
+            (0, vitest_1.expect)(result.mode).toBe('text');
             (0, vitest_1.expect)(result.lines).toHaveLength(3);
             (0, vitest_1.expect)(result.lines[0]).toEqual({ right: 'line1', type: 'add' });
             (0, vitest_1.expect)(result.lines[1]).toEqual({ right: 'line2', type: 'add' });
@@ -425,24 +466,42 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
             (0, vitest_1.expect)(result.originalContent).toBeUndefined();
             (0, vitest_1.expect)(result.modifiedContent).toBe('line1\nline2\nline3');
         });
+        (0, vitest_1.it)('classifies untracked files with NUL bytes as binary', async () => {
+            mockExecuteCommand
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_MISSING__\n',
+                stderr: '',
+                exitCode: 0,
+            }) // git show HEAD:file wrapper
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nabc\u0000def',
+                stderr: '',
+                exitCode: 0,
+            }); // cat file wrapper
+            const result = await service.getFileDiff('conn-1', '/home/user/project', 'image.png');
+            (0, vitest_1.expect)(result.mode).toBe('binary');
+            (0, vitest_1.expect)(result.isBinary).toBe(true);
+            (0, vitest_1.expect)(result.lines).toEqual([]);
+        });
         (0, vitest_1.it)('should handle deleted file with realistic diff output', async () => {
             mockExecuteCommand
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nold content\nwas here\n',
+                stderr: '',
+                exitCode: 0,
+            }) // HEAD:file
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_MISSING__\n',
+                stderr: '',
+                exitCode: 0,
+            }) // working file missing
                 .mockResolvedValueOnce({
                 stdout: 'diff --git a/deleted.txt b/deleted.txt\ndeleted file mode 100644\nindex abc1234..0000000\n--- a/deleted.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-old content\n-was here\n',
                 stderr: '',
                 exitCode: 0,
-            }) // git diff
-                .mockResolvedValueOnce({
-                stdout: 'old content\nwas here\n',
-                stderr: '',
-                exitCode: 0,
-            }) // git show HEAD:file
-                .mockResolvedValueOnce({
-                stdout: '',
-                stderr: 'No such file or directory',
-                exitCode: 1,
-            }); // cat fails — file not on disk
+            }); // git diff
             const result = await service.getFileDiff('conn-1', '/home/user/project', 'deleted.txt');
+            (0, vitest_1.expect)(result.mode).toBe('text');
             (0, vitest_1.expect)(result.lines).toHaveLength(2);
             (0, vitest_1.expect)(result.lines[0]).toEqual({ left: 'old content', type: 'del' });
             (0, vitest_1.expect)(result.lines[1]).toEqual({ left: 'was here', type: 'del' });
@@ -451,10 +510,19 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
         });
         (0, vitest_1.it)('should return empty lines when all fallbacks fail', async () => {
             mockExecuteCommand
-                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 }) // git diff (parallel)
-                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 1 }) // git show HEAD:file (parallel)
-                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 1 }); // cat fallback
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_MISSING__\n',
+                stderr: '',
+                exitCode: 0,
+            }) // HEAD:file missing
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_MISSING__\n',
+                stderr: '',
+                exitCode: 0,
+            }) // working file missing
+                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 1 }); // git diff fails
             const result = await service.getFileDiff('conn-1', '/home/user/project', 'ghost.txt');
+            (0, vitest_1.expect)(result.mode).toBe('unrenderable');
             (0, vitest_1.expect)(result.lines).toEqual([]);
             (0, vitest_1.expect)(result.originalContent).toBeUndefined();
             (0, vitest_1.expect)(result.modifiedContent).toBeUndefined();
@@ -462,21 +530,22 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
         (0, vitest_1.it)('should handle staged new file (git show HEAD fails, diff and cat succeed)', async () => {
             mockExecuteCommand
                 .mockResolvedValueOnce({
+                stdout: '__EMDASH_MISSING__\n',
+                stderr: '',
+                exitCode: 0,
+            }) // HEAD:file missing
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nline one\nline two\n',
+                stderr: '',
+                exitCode: 0,
+            }) // working file
+                .mockResolvedValueOnce({
                 stdout: 'diff --git a/newfile.ts b/newfile.ts\nnew file mode 100644\nindex 0000000..abc1234\n--- /dev/null\n+++ b/newfile.ts\n@@ -0,0 +1,2 @@\n+line one\n+line two\n',
                 stderr: '',
                 exitCode: 0,
-            }) // git diff
-                .mockResolvedValueOnce({
-                stdout: '',
-                stderr: 'fatal: Path does not exist',
-                exitCode: 128,
-            }) // git show HEAD:file (fails — file not in HEAD)
-                .mockResolvedValueOnce({
-                stdout: 'line one\nline two\n',
-                stderr: '',
-                exitCode: 0,
-            }); // cat file
+            }); // git diff
             const result = await service.getFileDiff('conn-1', '/home/user/project', 'newfile.ts');
+            (0, vitest_1.expect)(result.mode).toBe('text');
             (0, vitest_1.expect)(result.lines).toHaveLength(2);
             (0, vitest_1.expect)(result.lines[0]).toEqual({ right: 'line one', type: 'add' });
             (0, vitest_1.expect)(result.lines[1]).toEqual({ right: 'line two', type: 'add' });
@@ -486,21 +555,22 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
         (0, vitest_1.it)('should skip "No newline at end of file" markers', async () => {
             mockExecuteCommand
                 .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nhello\nold line',
+                stderr: '',
+                exitCode: 0,
+            }) // HEAD:file
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nhello\nnew line',
+                stderr: '',
+                exitCode: 0,
+            }) // working file
+                .mockResolvedValueOnce({
                 stdout: 'diff --git a/file.ts b/file.ts\nindex abc1234..def5678 100644\n--- a/file.ts\n+++ b/file.ts\n@@ -1,2 +1,2 @@\n hello\n-old line\n\\ No newline at end of file\n+new line\n\\ No newline at end of file\n',
                 stderr: '',
                 exitCode: 0,
-            }) // git diff
-                .mockResolvedValueOnce({
-                stdout: 'hello\nold line',
-                stderr: '',
-                exitCode: 0,
-            }) // git show HEAD:file (no trailing newline)
-                .mockResolvedValueOnce({
-                stdout: 'hello\nnew line',
-                stderr: '',
-                exitCode: 0,
-            }); // cat file (no trailing newline)
+            }); // git diff
             const result = await service.getFileDiff('conn-1', '/home/user/project', 'file.ts');
+            (0, vitest_1.expect)(result.mode).toBe('text');
             (0, vitest_1.expect)(result.lines).toHaveLength(3);
             (0, vitest_1.expect)(result.lines[0]).toEqual({ left: 'hello', right: 'hello', type: 'context' });
             (0, vitest_1.expect)(result.lines[1]).toEqual({ left: 'old line', type: 'del' });
@@ -509,50 +579,124 @@ vitest_1.vi.mock('../ssh/SshService', () => ({
             (0, vitest_1.expect)(result.modifiedContent).toBe('hello\nnew line');
         });
         (0, vitest_1.it)('should detect binary files and return empty lines with isBinary flag', async () => {
-            mockExecuteCommand.mockResolvedValueOnce({
+            mockExecuteCommand
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_MISSING__\n',
+                stderr: '',
+                exitCode: 0,
+            }) // HEAD:file
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_MISSING__\n',
+                stderr: '',
+                exitCode: 0,
+            }) // working file
+                .mockResolvedValueOnce({
                 stdout: 'diff --git a/image.png b/image.png\nindex abc1234..def5678 100644\nBinary files a/image.png and b/image.png differ\n',
                 stderr: '',
                 exitCode: 0,
-            }); // git diff only — no content fetch for binary
+            }); // git diff
             const result = await service.getFileDiff('conn-1', '/home/user/project', 'image.png');
             (0, vitest_1.expect)(result.lines).toEqual([]);
+            (0, vitest_1.expect)(result.mode).toBe('binary');
             (0, vitest_1.expect)(result.isBinary).toBe(true);
-            // Verify no additional SSH calls were made for content
-            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledTimes(1);
+            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledTimes(3);
+        });
+        (0, vitest_1.it)('uses merge-base and HEAD object content when baseRef is provided', async () => {
+            mockExecuteCommand
+                .mockResolvedValueOnce({
+                stdout: 'abc123\n',
+                stderr: '',
+                exitCode: 0,
+            }) // git merge-base
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nold\n',
+                stderr: '',
+                exitCode: 0,
+            }) // git show <merge-base>:file
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nnew\n',
+                stderr: '',
+                exitCode: 0,
+            }) // git show HEAD:file
+                .mockResolvedValueOnce({
+                stdout: 'diff --git a/file.ts b/file.ts\nindex abc..def 100644\n--- a/file.ts\n+++ b/file.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+                stderr: '',
+                exitCode: 0,
+            }); // git diff <merge-base> HEAD
+            const result = await service.getFileDiff('conn-1', '/home/user/project', 'file.ts', 'origin/main');
+            (0, vitest_1.expect)(result.mode).toBe('text');
+            (0, vitest_1.expect)(result.originalContent).toBe('old');
+            (0, vitest_1.expect)(result.modifiedContent).toBe('new');
+            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', "git merge-base 'origin/main' HEAD", '/home/user/project');
+            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', "git diff --no-color --unified=2000 'abc123' HEAD -- 'file.ts'", '/home/user/project');
+        });
+        (0, vitest_1.it)('returns empty text diff for unchanged tracked files', async () => {
+            mockExecuteCommand
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nsame\n',
+                stderr: '',
+                exitCode: 0,
+            }) // HEAD:file
+                .mockResolvedValueOnce({
+                stdout: '__EMDASH_CONTENT__\nsame\n',
+                stderr: '',
+                exitCode: 0,
+            }) // working file
+                .mockResolvedValueOnce({ stdout: '', stderr: '', exitCode: 0 }); // git diff
+            const result = await service.getFileDiff('conn-1', '/home/user/project', 'file.ts');
+            (0, vitest_1.expect)(result.mode).toBe('text');
+            (0, vitest_1.expect)(result.lines).toEqual([]);
+            (0, vitest_1.expect)(result.originalContent).toBe('same');
+            (0, vitest_1.expect)(result.modifiedContent).toBe('same');
         });
     });
-    (0, vitest_1.describe)('stageFile', () => {
-        (0, vitest_1.it)('should stage a file via git add', async () => {
+    (0, vitest_1.describe)('updateIndex', () => {
+        (0, vitest_1.it)('should stage selected files via git add', async () => {
             mockExecuteCommand.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
-            await service.stageFile('conn-1', '/home/user/project', 'src/app.ts');
+            await service.updateIndex('conn-1', '/home/user/project', {
+                action: 'stage',
+                scope: 'paths',
+                filePaths: ['src/app.ts'],
+            });
             (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', "git add -- 'src/app.ts'", '/home/user/project');
         });
-        (0, vitest_1.it)('should throw on failure', async () => {
+        (0, vitest_1.it)('should throw on stage failure', async () => {
             mockExecuteCommand.mockResolvedValue({
                 stdout: '',
                 stderr: 'fatal: pathspec not found',
                 exitCode: 128,
             });
-            await (0, vitest_1.expect)(service.stageFile('conn-1', '/home/user/project', 'nonexistent.ts')).rejects.toThrow('Failed to stage file');
+            await (0, vitest_1.expect)(service.updateIndex('conn-1', '/home/user/project', {
+                action: 'stage',
+                scope: 'paths',
+                filePaths: ['nonexistent.ts'],
+            })).rejects.toThrow('Failed to stage file');
+        });
+        (0, vitest_1.it)('should stage all files via git add -A', async () => {
+            mockExecuteCommand.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+            await service.updateIndex('conn-1', '/home/user/project', {
+                action: 'stage',
+                scope: 'all',
+            });
+            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', 'git add -A', '/home/user/project');
+        });
+        (0, vitest_1.it)('should unstage selected files via git reset HEAD', async () => {
+            mockExecuteCommand.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
+            await service.updateIndex('conn-1', '/home/user/project', {
+                action: 'unstage',
+                scope: 'paths',
+                filePaths: ['src/app.ts'],
+            });
+            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', "git reset HEAD -- 'src/app.ts'", '/home/user/project');
         });
         (0, vitest_1.it)('should escape special characters in file path', async () => {
             mockExecuteCommand.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
-            await service.stageFile('conn-1', '/home/user/project', "file with spaces & 'quotes'.ts");
+            await service.updateIndex('conn-1', '/home/user/project', {
+                action: 'stage',
+                scope: 'paths',
+                filePaths: ["file with spaces & 'quotes'.ts"],
+            });
             (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', vitest_1.expect.stringContaining('git add --'), '/home/user/project');
-        });
-    });
-    (0, vitest_1.describe)('stageAllFiles', () => {
-        (0, vitest_1.it)('should run git add -A', async () => {
-            mockExecuteCommand.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
-            await service.stageAllFiles('conn-1', '/home/user/project');
-            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', 'git add -A', '/home/user/project');
-        });
-    });
-    (0, vitest_1.describe)('unstageFile', () => {
-        (0, vitest_1.it)('should run git reset HEAD', async () => {
-            mockExecuteCommand.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 });
-            await service.unstageFile('conn-1', '/home/user/project', 'src/app.ts');
-            (0, vitest_1.expect)(mockExecuteCommand).toHaveBeenCalledWith('conn-1', "git reset HEAD -- 'src/app.ts'", '/home/user/project');
         });
     });
     (0, vitest_1.describe)('revertFile', () => {

@@ -197,6 +197,7 @@ vi.mock('../../main/services/ptyManager', () => ({
   clearStoredSession: clearStoredSessionMock,
   getStoredResumeTarget: getStoredResumeTargetMock,
   markCodexSessionBound: markCodexSessionBoundMock,
+  applySessionIsolation: vi.fn(() => false),
 }));
 
 vi.mock('../../main/lib/logger', () => ({

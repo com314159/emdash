@@ -1182,6 +1182,7 @@ const ChatInterface: React.FC<Props> = ({
                 <TerminalPane
                   ref={terminalRef}
                   id={terminalId}
+                  ownerTaskId={task.id}
                   cwd={terminalCwd}
                   remote={
                     projectRemoteConnectionId

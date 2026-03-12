@@ -13,8 +13,9 @@ const diffParser_1 = require("../diffParser");
             '-old line\n' +
             '+new line\n' +
             ' world\n';
-        const { lines, isBinary } = (0, diffParser_1.parseDiffLines)(stdout);
+        const { lines, isBinary, hasHunk } = (0, diffParser_1.parseDiffLines)(stdout);
         (0, vitest_1.expect)(isBinary).toBe(false);
+        (0, vitest_1.expect)(hasHunk).toBe(true);
         (0, vitest_1.expect)(lines).toEqual([
             { left: 'hello', right: 'hello', type: 'context' },
             { left: 'old line', type: 'del' },
@@ -61,6 +62,30 @@ const diffParser_1 = require("../diffParser");
         (0, vitest_1.expect)(isBinary).toBe(true);
         (0, vitest_1.expect)(lines).toEqual([]);
     });
+    (0, vitest_1.it)('should parse hunk headers with omitted line counts', () => {
+        const stdout = 'diff --git a/f.txt b/f.txt\n' +
+            'index 123..456 100644\n' +
+            '--- a/f.txt\n' +
+            '+++ b/f.txt\n' +
+            '@@ -1 +1 @@\n' +
+            '-old\n' +
+            '+new\n';
+        const { lines, hasHunk } = (0, diffParser_1.parseDiffLines)(stdout);
+        (0, vitest_1.expect)(hasHunk).toBe(true);
+        (0, vitest_1.expect)(lines).toEqual([
+            { left: 'old', type: 'del' },
+            { right: 'new', type: 'add' },
+        ]);
+    });
+    (0, vitest_1.it)('should detect git binary patch format', () => {
+        const stdout = 'diff --git a/a.bin b/a.bin\n' +
+            'index 111..222 100644\n' +
+            'GIT binary patch\n' +
+            'literal 12\n';
+        const { lines, isBinary } = (0, diffParser_1.parseDiffLines)(stdout);
+        (0, vitest_1.expect)(isBinary).toBe(true);
+        (0, vitest_1.expect)(lines).toEqual([]);
+    });
     (0, vitest_1.it)('should return empty for empty input', () => {
         const { lines, isBinary } = (0, diffParser_1.parseDiffLines)('');
         (0, vitest_1.expect)(lines).toEqual([]);
@@ -71,6 +96,34 @@ const diffParser_1 = require("../diffParser");
         (0, vitest_1.expect)(lines).toEqual([
             { left: 'some unexpected line', right: 'some unexpected line', type: 'context' },
         ]);
+    });
+});
+(0, vitest_1.describe)('buildDiffWarnings', () => {
+    (0, vitest_1.it)('should detect hidden bidi text', () => {
+        const warnings = (0, diffParser_1.buildDiffWarnings)({
+            lines: [{ right: `safe\u202Etext`, type: 'add' }],
+        });
+        (0, vitest_1.expect)(warnings).toEqual([{ kind: 'hidden-bidi' }]);
+    });
+    (0, vitest_1.it)('should detect line ending changes', () => {
+        const warnings = (0, diffParser_1.buildDiffWarnings)({
+            originalContent: 'a\r\nb\r\n',
+            modifiedContent: 'a\nb\n',
+        });
+        (0, vitest_1.expect)(warnings).toContainEqual({
+            kind: 'line-endings-change',
+            from: 'crlf',
+            to: 'lf',
+        });
+    });
+});
+(0, vitest_1.describe)('detectLineEndingStyle', () => {
+    (0, vitest_1.it)('should return none for missing or empty text', () => {
+        (0, vitest_1.expect)((0, diffParser_1.detectLineEndingStyle)(undefined)).toBe('none');
+        (0, vitest_1.expect)((0, diffParser_1.detectLineEndingStyle)('')).toBe('none');
+    });
+    (0, vitest_1.it)('should detect mixed line endings', () => {
+        (0, vitest_1.expect)((0, diffParser_1.detectLineEndingStyle)('a\r\nb\nc\r')).toBe('mixed');
     });
 });
 (0, vitest_1.describe)('stripTrailingNewline', () => {

@@ -105,6 +105,7 @@ exports.messages = (0, sqlite_core_1.sqliteTable)('messages', {
     conversationIdIdx: (0, sqlite_core_1.index)('idx_messages_conversation_id').on(table.conversationId),
     timestampIdx: (0, sqlite_core_1.index)('idx_messages_timestamp').on(table.timestamp),
 }));
+// TODO: remove after refactor (resolves migration issues)
 exports.lineComments = (0, sqlite_core_1.sqliteTable)('line_comments', {
     id: (0, sqlite_core_1.text)('id').primaryKey(),
     taskId: (0, sqlite_core_1.text)('task_id')

@@ -218,7 +218,10 @@ function registerGitIpc() {
         let stagedFiles = await readRemoteStagedFiles();
         // Auto-stage if nothing staged yet
         if (hasWorkingChanges && stagedFiles.length === 0) {
-            await remoteGitService.stageAllFiles(connectionId, taskPath);
+            await remoteGitService.updateIndex(connectionId, taskPath, {
+                action: 'stage',
+                scope: 'all',
+            });
         }
         // Unstage plan mode artifacts
         await remoteGitService.execGit(connectionId, taskPath, 'reset -q .emdash 2>/dev/null || true');
@@ -326,7 +329,10 @@ function registerGitIpc() {
         // Stage and commit pending changes
         const statusResult = await remoteGitService.execGit(connectionId, taskPath, 'status --porcelain --untracked-files=all');
         if (statusResult.stdout?.trim()) {
-            await remoteGitService.stageAllFiles(connectionId, taskPath);
+            await remoteGitService.updateIndex(connectionId, taskPath, {
+                action: 'stage',
+                scope: 'all',
+            });
             const commitResult = await remoteGitService.commit(connectionId, taskPath, 'stagehand: prepare pull request');
             if (commitResult.exitCode !== 0 && !/nothing to commit/i.test(commitResult.stderr || '')) {
                 outputs.push(commitResult.stderr || '');
@@ -426,7 +432,10 @@ function registerGitIpc() {
         // Stage and commit pending changes
         const statusResult = await remoteGitService.execGit(connectionId, taskPath, 'status --porcelain --untracked-files=all');
         if (statusResult.stdout?.trim()) {
-            await remoteGitService.stageAllFiles(connectionId, taskPath);
+            await remoteGitService.updateIndex(connectionId, taskPath, {
+                action: 'stage',
+                scope: 'all',
+            });
             const commitResult = await remoteGitService.commit(connectionId, taskPath, 'chore: prepare for merge to main');
             if (commitResult.exitCode !== 0 && !/nothing to commit/i.test(commitResult.stderr || '')) {
                 throw new Error(commitResult.stderr || 'Commit failed');
@@ -645,70 +654,45 @@ function registerGitIpc() {
         try {
             const remoteProject = await (0, remoteProjectResolver_1.resolveRemoteProjectForWorktreePath)(args.taskPath);
             if (remoteProject) {
-                const diff = await remoteGitService.getFileDiff(remoteProject.sshConnectionId, args.taskPath, args.filePath);
+                const diff = await remoteGitService.getFileDiff(remoteProject.sshConnectionId, args.taskPath, args.filePath, args.baseRef, args.forceLarge);
                 return { success: true, diff };
             }
-            const diff = await (0, GitService_1.getFileDiff)(args.taskPath, args.filePath, args.baseRef);
+            const diff = await (0, GitService_1.getFileDiff)(args.taskPath, args.filePath, args.baseRef, args.forceLarge);
             return { success: true, diff };
         }
         catch (error) {
             return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
     });
-    // Git: Stage file
-    electron_1.ipcMain.handle('git:stage-file', async (_, args) => {
+    // Git: Update index (stage/unstage all or selected paths)
+    electron_1.ipcMain.handle('git:update-index', async (_, args) => {
         try {
-            logger_1.log.info('Staging file:', { taskPath: args.taskPath, filePath: args.filePath });
+            const operationArgs = {
+                action: args.action,
+                scope: args.scope,
+                filePaths: args.scope === 'paths' ? (args.filePaths || []).filter(Boolean) : undefined,
+            };
+            if (operationArgs.scope === 'paths' &&
+                (!operationArgs.filePaths || operationArgs.filePaths.length === 0)) {
+                return { success: true };
+            }
+            logger_1.log.info('Updating git index', {
+                taskPath: args.taskPath,
+                action: operationArgs.action,
+                scope: operationArgs.scope,
+                count: operationArgs.filePaths?.length ?? null,
+            });
             const remoteProject = await (0, remoteProjectResolver_1.resolveRemoteProjectForWorktreePath)(args.taskPath);
             if (remoteProject) {
-                await remoteGitService.stageFile(remoteProject.sshConnectionId, args.taskPath, args.filePath);
+                await remoteGitService.updateIndex(remoteProject.sshConnectionId, args.taskPath, operationArgs);
             }
             else {
-                await (0, GitService_1.stageFile)(args.taskPath, args.filePath);
+                await (0, GitService_1.updateIndex)(args.taskPath, operationArgs);
             }
-            logger_1.log.info('File staged successfully:', args.filePath);
             return { success: true };
         }
         catch (error) {
-            logger_1.log.error('Failed to stage file:', { filePath: args.filePath, error });
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
-    });
-    // Git: Stage all files
-    electron_1.ipcMain.handle('git:stage-all-files', async (_, args) => {
-        try {
-            logger_1.log.info('Staging all files:', { taskPath: args.taskPath });
-            const remoteProject = await (0, remoteProjectResolver_1.resolveRemoteProjectForWorktreePath)(args.taskPath);
-            if (remoteProject) {
-                await remoteGitService.stageAllFiles(remoteProject.sshConnectionId, args.taskPath);
-            }
-            else {
-                await (0, GitService_1.stageAllFiles)(args.taskPath);
-            }
-            logger_1.log.info('All files staged successfully');
-            return { success: true };
-        }
-        catch (error) {
-            logger_1.log.error('Failed to stage all files:', { taskPath: args.taskPath, error });
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
-    });
-    // Git: Unstage file
-    electron_1.ipcMain.handle('git:unstage-file', async (_, args) => {
-        try {
-            logger_1.log.info('Unstaging file:', { taskPath: args.taskPath, filePath: args.filePath });
-            const remoteProject = await (0, remoteProjectResolver_1.resolveRemoteProjectForWorktreePath)(args.taskPath);
-            if (remoteProject) {
-                await remoteGitService.unstageFile(remoteProject.sshConnectionId, args.taskPath, args.filePath);
-            }
-            else {
-                await (0, GitService_1.unstageFile)(args.taskPath, args.filePath);
-            }
-            logger_1.log.info('File unstaged successfully:', args.filePath);
-            return { success: true };
-        }
-        catch (error) {
-            logger_1.log.error('Failed to unstage file:', { filePath: args.filePath, error });
+            logger_1.log.error('Failed to update git index', { taskPath: args.taskPath, error });
             return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
     });
@@ -2101,7 +2085,7 @@ current branch '${currentBranch}' ahead of base '${baseRef}'.`,
                 return { success: false, error: 'Invalid commit hash' };
             }
             // filePath is validated by path.resolve check in GitService.getCommitFileDiff
-            const diff = await (0, GitService_1.getCommitFileDiff)(args.taskPath, args.commitHash, args.filePath);
+            const diff = await (0, GitService_1.getCommitFileDiff)(args.taskPath, args.commitHash, args.filePath, args.forceLarge);
             return { success: true, diff };
         }
         catch (error) {

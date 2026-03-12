@@ -49,6 +49,7 @@ const DEFAULT_SETTINGS = {
     defaultProvider: DEFAULT_PROVIDER_ID,
     tasks: {
         autoGenerateName: true,
+        autoInferTaskNames: true,
         autoApproveByDefault: false,
         createWorktreeByDefault: true,
         autoTrustWorktrees: true,
@@ -78,6 +79,7 @@ const DEFAULT_SETTINGS = {
     providerConfigs: {},
     terminal: {
         fontFamily: '',
+        fontSize: 0,
         autoCopyOnSelection: false,
     },
     defaultOpenInApp: 'terminal',
@@ -279,6 +281,7 @@ function normalizeSettings(input) {
     const tasks = input?.tasks || {};
     out.tasks = {
         autoGenerateName: Boolean(tasks?.autoGenerateName ?? DEFAULT_SETTINGS.tasks.autoGenerateName),
+        autoInferTaskNames: Boolean(tasks?.autoInferTaskNames ?? DEFAULT_SETTINGS.tasks.autoInferTaskNames),
         autoApproveByDefault: Boolean(tasks?.autoApproveByDefault ?? DEFAULT_SETTINGS.tasks.autoApproveByDefault),
         createWorktreeByDefault: Boolean(tasks?.createWorktreeByDefault ?? DEFAULT_SETTINGS.tasks.createWorktreeByDefault),
         autoTrustWorktrees: Boolean(tasks?.autoTrustWorktrees ?? DEFAULT_SETTINGS.tasks.autoTrustWorktrees),
@@ -375,7 +378,13 @@ function normalizeSettings(input) {
     const term = input?.terminal || {};
     const fontFamily = String(term?.fontFamily ?? '').trim();
     const autoCopyOnSelection = Boolean(term?.autoCopyOnSelection ?? false);
-    out.terminal = { fontFamily, autoCopyOnSelection };
+    const rawFontSize = term?.fontSize;
+    let fontSize = 0;
+    if (typeof rawFontSize === 'number' && Number.isFinite(rawFontSize)) {
+        const clamped = Math.round(rawFontSize);
+        fontSize = clamped >= 8 && clamped <= 24 ? clamped : 0;
+    }
+    out.terminal = { fontFamily, fontSize, autoCopyOnSelection };
     // Default Open In App
     const defaultOpenInApp = input?.defaultOpenInApp;
     out.defaultOpenInApp = (0, openInApps_1.isValidOpenInAppId)(defaultOpenInApp)

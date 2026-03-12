@@ -112,6 +112,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clickTime?: number;
     env?: Record<string, string>;
     resume?: boolean;
+    ownerTaskId?: string;
   }) => ipcRenderer.invoke('pty:startDirect', opts),
 
   ptyScpToRemote: (args: { connectionId: string; localPaths: string[] }) =>

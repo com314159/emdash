@@ -460,6 +460,43 @@ class RemoteFileSystem {
         }
     }
     /**
+     * Rename a file or directory
+     */
+    async rename(oldPath, newPath) {
+        try {
+            const sftp = await this.sshService.getSftp(this.connectionId);
+            const fullOldPath = this.resolveRemotePath(oldPath);
+            const fullNewPath = this.resolveRemotePath(newPath);
+            return new Promise((resolve) => {
+                sftp.rename(fullOldPath, fullNewPath, (err) => {
+                    if (err) {
+                        resolve({ success: false, error: err.message });
+                    }
+                    else {
+                        resolve({ success: true });
+                    }
+                });
+            });
+        }
+        catch (error) {
+            return { success: false, error: String(error) };
+        }
+    }
+    /**
+     * Create a directory
+     */
+    async mkdir(dirPath) {
+        try {
+            const sftp = await this.sshService.getSftp(this.connectionId);
+            const fullPath = this.resolveRemotePath(dirPath);
+            await this.ensureRemoteDir(sftp, fullPath);
+            return { success: true };
+        }
+        catch (error) {
+            return { success: false, error: String(error) };
+        }
+    }
+    /**
      * Read image file as base64 data URL via SFTP
      */
     async readImage(path) {

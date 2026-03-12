@@ -5,6 +5,8 @@ import { log } from '../lib/logger';
 
 type Props = {
   id: string;
+  /** Stable task ID that owns this terminal — used for session isolation across restarts. */
+  ownerTaskId?: string;
   cwd?: string;
   remote?: {
     connectionId: string;
@@ -34,6 +36,7 @@ const TerminalPaneComponent = forwardRef<{ focus: () => void }, Props>(
   (
     {
       id,
+      ownerTaskId,
       cwd,
       remote,
       providerId,
@@ -65,6 +68,8 @@ const TerminalPaneComponent = forwardRef<{ focus: () => void }, Props>(
     const errorCleanupRef = useRef<(() => void) | null>(null);
     const exitCleanupRef = useRef<(() => void) | null>(null);
 
+    const ownerTaskIdRef = useRef(ownerTaskId);
+    ownerTaskIdRef.current = ownerTaskId;
     const cwdRef = useRef(cwd);
     cwdRef.current = cwd;
     const remoteRef = useRef(remote);
@@ -129,6 +134,7 @@ const TerminalPaneComponent = forwardRef<{ focus: () => void }, Props>(
 
       const session = terminalSessionRegistry.attach({
         taskId: id,
+        ownerTaskId: ownerTaskIdRef.current,
         container,
         cwd: cwdRef.current,
         remote: remoteRef.current,

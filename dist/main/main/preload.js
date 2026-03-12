@@ -162,6 +162,7 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     worktreeGetAll: () => electron_1.ipcRenderer.invoke('worktree:getAll'),
     // Worktree pool (reserve) management for instant task creation
     worktreeEnsureReserve: (args) => electron_1.ipcRenderer.invoke('worktree:ensureReserve', args),
+    worktreePreflightReserve: (args) => electron_1.ipcRenderer.invoke('worktree:preflightReserve', args),
     worktreeHasReserve: (args) => electron_1.ipcRenderer.invoke('worktree:hasReserve', args),
     worktreeClaimReserve: (args) => electron_1.ipcRenderer.invoke('worktree:claimReserve', args),
     worktreeClaimReserveAndSaveTask: (args) => electron_1.ipcRenderer.invoke('worktree:claimReserveAndSaveTask', args),
@@ -187,6 +188,9 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     fsSearchContent: (root, query, options, remote) => electron_1.ipcRenderer.invoke('fs:searchContent', { root, query, options, ...remote }),
     fsWriteFile: (root, relPath, content, mkdirs, remote) => electron_1.ipcRenderer.invoke('fs:write', { root, relPath, content, mkdirs, ...remote }),
     fsRemove: (root, relPath, remote) => electron_1.ipcRenderer.invoke('fs:remove', { root, relPath, ...remote }),
+    fsRename: (root, oldName, newName, remote) => electron_1.ipcRenderer.invoke('fs:rename', { root, oldName, newName, ...remote }),
+    fsMkdir: (root, relPath, remote) => electron_1.ipcRenderer.invoke('fs:mkdir', { root, relPath, ...remote }),
+    fsRmdir: (root, relPath, remote) => electron_1.ipcRenderer.invoke('fs:rmdir', { root, relPath, ...remote }),
     getProjectConfig: (projectPath) => electron_1.ipcRenderer.invoke('fs:getProjectConfig', { projectPath }),
     saveProjectConfig: (projectPath, content) => electron_1.ipcRenderer.invoke('fs:saveProjectConfig', { projectPath, content }),
     // Attachments
@@ -210,9 +214,7 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
         };
     },
     getFileDiff: (args) => electron_1.ipcRenderer.invoke('git:get-file-diff', args),
-    stageFile: (args) => electron_1.ipcRenderer.invoke('git:stage-file', args),
-    stageAllFiles: (args) => electron_1.ipcRenderer.invoke('git:stage-all-files', args),
-    unstageFile: (args) => electron_1.ipcRenderer.invoke('git:unstage-file', args),
+    updateIndex: (args) => electron_1.ipcRenderer.invoke('git:update-index', args),
     revertFile: (args) => electron_1.ipcRenderer.invoke('git:revert-file', args),
     gitCommit: (args) => electron_1.ipcRenderer.invoke('git:commit', args),
     gitPush: (args) => electron_1.ipcRenderer.invoke('git:push', args),
@@ -335,14 +337,6 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     getProviderCustomConfig: (providerId) => electron_1.ipcRenderer.invoke('providers:getCustomConfig', providerId),
     getAllProviderCustomConfigs: () => electron_1.ipcRenderer.invoke('providers:getAllCustomConfigs'),
     updateProviderCustomConfig: (providerId, config) => electron_1.ipcRenderer.invoke('providers:updateCustomConfig', providerId, config),
-    // Line comments management
-    lineCommentsCreate: (input) => electron_1.ipcRenderer.invoke('lineComments:create', input),
-    lineCommentsGet: (args) => electron_1.ipcRenderer.invoke('lineComments:get', args),
-    lineCommentsUpdate: (input) => electron_1.ipcRenderer.invoke('lineComments:update', input),
-    lineCommentsDelete: (id) => electron_1.ipcRenderer.invoke('lineComments:delete', id),
-    lineCommentsGetFormatted: (taskId) => electron_1.ipcRenderer.invoke('lineComments:getFormatted', taskId),
-    lineCommentsMarkSent: (commentIds) => electron_1.ipcRenderer.invoke('lineComments:markSent', commentIds),
-    lineCommentsGetUnsent: (taskId) => electron_1.ipcRenderer.invoke('lineComments:getUnsent', taskId),
     // Debug helpers
     debugAppendLog: (filePath, content, options) => electron_1.ipcRenderer.invoke('debug:append-log', filePath, content, options ?? {}),
     // PlanMode strict lock

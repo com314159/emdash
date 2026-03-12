@@ -1,14 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.waitForShellPrompt = waitForShellPrompt;
+const stripAnsi_1 = require("@shared/text/stripAnsi");
 /**
  * Matches common shell prompt endings: $, #, %, >, ❯ preceded by a non-digit, non-space character.
  * Each chunk is matched independently — prompts split across TCP segments rely on the timeout fallback.
  */
 const SHELL_PROMPT_RE = /\S.*(?<!\d)[#$%>❯]\s*$/;
-function stripAnsi(str) {
-    return str.replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07/g, '');
-}
 /**
  * Waits for a shell prompt to appear in PTY output before writing data.
  * Falls back to writing after a configurable timeout.
@@ -37,7 +35,7 @@ function waitForShellPrompt(options) {
     const unsubscribe = subscribe((chunk) => {
         if (done)
             return;
-        const clean = stripAnsi(chunk);
+        const clean = (0, stripAnsi_1.stripAnsi)(chunk, { includePrivateCsiParams: true });
         if (SHELL_PROMPT_RE.test(clean)) {
             finish();
         }

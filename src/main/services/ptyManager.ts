@@ -507,7 +507,9 @@ export function applySessionIsolation(
   provider: ProviderDefinition,
   id: string,
   cwd: string,
-  isResume: boolean
+  isResume: boolean,
+  /** Stable task ID passed from the renderer. Survives conversation ID changes across restarts. */
+  ownerTaskId?: string
 ): boolean {
   if (!provider.sessionIdFlag) return false;
 
@@ -519,33 +521,79 @@ export function applySessionIsolation(
 
   // Resolve the owning taskId so multi-chat discovery is scoped per-task,
   // preventing different tasks in the same project from sharing sessions.
-  const taskId = parsed.kind === 'main' ? parsed.suffix : loadSessionMap()[id]?.taskId;
+  // Priority: explicit ownerTaskId > parsed suffix (for main PTYs) > persisted in session map.
+  const taskId =
+    ownerTaskId ||
+    (parsed.kind === 'main' ? parsed.suffix : undefined) ||
+    loadSessionMap()[id]?.taskId;
 
   const knownEntry = getNormalizedSessionEntry(id, loadSessionMap()[id]);
   const knownSession =
     knownEntry?.providerId === provider.id && knownEntry.strategy === 'claude-session-id'
       ? knownEntry.target
       : null;
-  if (knownSession) {
+
+  // Fallback: if no entry found for this exact ptyId (common when conversation
+  // IDs change across restarts for chat PTYs), try to find a session from the
+  // same provider+cwd that was previously created for this task.
+  let recoveredSession: string | null = null;
+  if (!knownSession && isAdditionalChat && taskId) {
+    const map = loadSessionMap();
+    for (const [key, entry] of Object.entries(map)) {
+      if (key === id) continue;
+      const norm = getNormalizedSessionEntry(key, entry);
+      if (
+        norm &&
+        norm.providerId === provider.id &&
+        norm.cwd === cwd &&
+        norm.strategy === 'claude-session-id' &&
+        // Only recover from same-kind (chat) entries to avoid stealing main sessions
+        key.includes('-chat-')
+      ) {
+        // Require matching taskId for recovery — without it we can't distinguish
+        // between sessions belonging to different tasks in the same project.
+        if (norm.taskId && norm.taskId === taskId) {
+          recoveredSession = norm.target;
+          log.info('ptyManager: recovered session from stale ptyId', {
+            oldPtyId: key,
+            newPtyId: id,
+            taskId,
+            uuid: recoveredSession,
+          });
+          // Clean up the old entry and re-register under the new ptyId
+          delete map[key];
+          break;
+        }
+      }
+    }
+  }
+
+  const effectiveSession = knownSession || recoveredSession;
+  if (effectiveSession) {
     // For Claude, validate the session still exists on disk before resuming.
     // Also treat cwd mismatch as stale — the session belongs to a different
     // project context and Claude would look in the wrong directory.
-    if (provider.id === 'claude') {
-      const isStale = knownEntry!.cwd !== cwd || !claudeSessionFileExists(knownSession, cwd);
+    // Skip disk validation for recovered sessions (conversation ID changed
+    // but session is valid) and for remote projects (session files are on
+    // the remote machine, not locally accessible).
+    if (provider.id === 'claude' && !recoveredSession) {
+      const isStale = knownEntry!.cwd !== cwd || !claudeSessionFileExists(effectiveSession, cwd);
       if (isStale) {
         log.warn('ptyManager: stale session detected, creating new session', {
           ptyId: id,
-          staleUuid: knownSession,
+          staleUuid: effectiveSession,
         });
         clearStoredSession(id);
         // Fall through — the decision tree below will create a new session
         // or the caller will use generic resume flags
       } else {
-        cliArgs.push('--resume', knownSession);
+        cliArgs.push('--resume', effectiveSession);
         return true;
       }
     } else {
-      cliArgs.push('--resume', knownSession);
+      // Recovered session or non-Claude: always resume and re-register
+      cliArgs.push('--resume', effectiveSession);
+      markClaudeSessionCreated(id, effectiveSession, cwd, taskId);
       return true;
     }
   }
@@ -1082,6 +1130,8 @@ export function startDirectPty(options: {
   env?: Record<string, string>;
   resume?: boolean;
   tmux?: boolean;
+  /** Stable task ID for session isolation (survives conversation ID changes). */
+  ownerTaskId?: string;
 }): IPty | null {
   if (process.env.EMDASH_DISABLE_PTY === '1') {
     throw new Error('PTY disabled via EMDASH_DISABLE_PTY=1');
@@ -1105,6 +1155,7 @@ export function startDirectPty(options: {
     initialPrompt,
     env,
     resume,
+    ownerTaskId,
   } = options;
 
   const resolvedConfig = resolveProviderCommandConfig(providerId);
@@ -1159,7 +1210,14 @@ export function startDirectPty(options: {
     const exactResumeArgs = getStoredExactResumeArgs(provider.id, id, cwd);
     // Session isolation for multi-chat scenarios.
     // See applySessionIsolation() for the full decision tree.
-    const usedSessionIsolation = applySessionIsolation(cliArgs, provider, id, cwd, !!resume);
+    const usedSessionIsolation = applySessionIsolation(
+      cliArgs,
+      provider,
+      id,
+      cwd,
+      !!resume,
+      ownerTaskId
+    );
 
     cliArgs.push(...exactResumeArgs);
     cliArgs.push(
@@ -1272,6 +1330,8 @@ export async function startPty(options: {
   skipResume?: boolean;
   shellSetup?: string;
   tmux?: boolean;
+  /** Stable task ID for session isolation (survives conversation ID changes). */
+  ownerTaskId?: string;
 }): Promise<IPty> {
   if (process.env.EMDASH_DISABLE_PTY === '1') {
     throw new Error('PTY disabled via EMDASH_DISABLE_PTY=1');
@@ -1288,6 +1348,7 @@ export async function startPty(options: {
     skipResume,
     shellSetup,
     tmux,
+    ownerTaskId,
   } = options;
 
   const defaultShell = getDefaultShell();
@@ -1406,7 +1467,8 @@ export async function startPty(options: {
           provider,
           id,
           useCwd,
-          !skipResume
+          !skipResume,
+          ownerTaskId
         );
 
         cliArgs.push(...exactResumeArgs);

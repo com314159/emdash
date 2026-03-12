@@ -23,7 +23,6 @@ const settingsIpc_1 = require("./settingsIpc");
 const hostPreviewIpc_1 = require("./hostPreviewIpc");
 const browserIpc_1 = require("./browserIpc");
 const netIpc_1 = require("./netIpc");
-const lineCommentsIpc_1 = require("./lineCommentsIpc");
 const sshIpc_1 = require("./sshIpc");
 const skillsIpc_1 = require("./skillsIpc");
 const mcpIpc_1 = require("./mcpIpc");
@@ -52,7 +51,6 @@ function registerAllIpc() {
     (0, hostPreviewIpc_1.registerHostPreviewIpc)();
     (0, browserIpc_1.registerBrowserIpc)();
     (0, netIpc_1.registerNetIpc)();
-    (0, lineCommentsIpc_1.registerLineCommentsIpc)();
     // Existing modules
     (0, ptyIpc_1.registerPtyIpc)();
     (0, worktreeIpc_1.registerWorktreeIpc)();

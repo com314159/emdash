@@ -211,6 +211,25 @@ function registerWorktreeIpc() {
             return { success: false, error: error.message };
         }
     });
+    // Preflight freshness check — called when create-task UI opens so the
+    // ls-remote cost is hidden behind user interaction time.
+    electron_1.ipcMain.handle('worktree:preflightReserve', async (event, args) => {
+        try {
+            const project = await resolveProjectByIdOrPath({
+                projectId: args.projectId,
+                projectPath: args.projectPath,
+            });
+            if ((0, remoteProjectResolver_1.isRemoteProject)(project)) {
+                return { success: true };
+            }
+            await WorktreePoolService_1.worktreePoolService.preflightCheck(args.projectId, args.projectPath);
+            return { success: true };
+        }
+        catch (error) {
+            console.error('Failed to preflight reserve:', error);
+            return { success: false, error: error.message };
+        }
+    });
     // Check if a reserve is available for a project
     electron_1.ipcMain.handle('worktree:hasReserve', async (event, args) => {
         try {

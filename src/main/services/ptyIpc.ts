@@ -20,6 +20,7 @@ import {
   clearStoredSession,
   getStoredResumeTarget,
   markCodexSessionBound,
+  applySessionIsolation,
 } from './ptyManager';
 import { log } from '../lib/logger';
 import { terminalSnapshotService } from './TerminalSnapshotService';
@@ -544,8 +545,14 @@ function buildRemoteProviderInvocation(args: {
   autoApprove?: boolean;
   initialPrompt?: string;
   resume?: boolean;
+  /** PTY ID — required for per-task session isolation on remote projects. */
+  id?: string;
+  /** Remote working directory — required for per-task session isolation. */
+  cwd?: string;
+  /** Stable task ID for session isolation (survives conversation ID changes). */
+  ownerTaskId?: string;
 }): { cli: string; cmd: string; installCommand?: string } {
-  const { providerId, autoApprove, initialPrompt, resume } = args;
+  const { providerId, autoApprove, initialPrompt, resume, id, cwd, ownerTaskId } = args;
   const fallbackProvider = getProvider(providerId as ProviderId);
   const resolvedConfig = resolveProviderCommandConfig(providerId);
   const provider = resolvedConfig?.provider ?? fallbackProvider;
@@ -559,17 +566,30 @@ function buildRemoteProviderInvocation(args: {
   const cliCommandParts = parsedCliParts.length > 0 ? parsedCliParts : [cliCommand];
   const cliCheckCommand = cliCommandParts[0];
 
-  const cliArgs = buildProviderCliArgs({
-    resume,
-    resumeFlag: resolvedConfig?.resumeFlag ?? fallbackProvider?.resumeFlag,
-    defaultArgs: resolvedConfig?.defaultArgs ?? fallbackProvider?.defaultArgs,
-    extraArgs: resolvedConfig?.extraArgs,
-    autoApprove,
-    autoApproveFlag: resolvedConfig?.autoApproveFlag ?? fallbackProvider?.autoApproveFlag,
-    initialPrompt,
-    initialPromptFlag: resolvedConfig?.initialPromptFlag ?? fallbackProvider?.initialPromptFlag,
-    useKeystrokeInjection: provider?.useKeystrokeInjection,
-  });
+  const cliArgs: string[] = [];
+
+  // Apply per-task session isolation FIRST, before generic resume flags.
+  // When session isolation succeeds (returns true), it adds --resume <uuid> or
+  // --session-id <uuid>, and we must skip the generic resume flag (e.g. -c -r)
+  // to avoid conflicts. This mirrors the logic in startDirectPty/startPty.
+  let usedSessionIsolation = false;
+  if (id && cwd && provider) {
+    usedSessionIsolation = applySessionIsolation(cliArgs, provider, id, cwd, !!resume, ownerTaskId);
+  }
+
+  cliArgs.push(
+    ...buildProviderCliArgs({
+      resume: !usedSessionIsolation && !!resume,
+      resumeFlag: resolvedConfig?.resumeFlag ?? fallbackProvider?.resumeFlag,
+      defaultArgs: resolvedConfig?.defaultArgs ?? fallbackProvider?.defaultArgs,
+      extraArgs: resolvedConfig?.extraArgs,
+      autoApprove,
+      autoApproveFlag: resolvedConfig?.autoApproveFlag ?? fallbackProvider?.autoApproveFlag,
+      initialPrompt,
+      initialPromptFlag: resolvedConfig?.initialPromptFlag ?? fallbackProvider?.initialPromptFlag,
+      useKeystrokeInjection: provider?.useKeystrokeInjection,
+    })
+  );
   cliArgs.push(...getProviderRuntimeCliArgs({ providerId, target: 'remote' }));
 
   const cmdParts = [...cliCommandParts, ...cliArgs];
@@ -1176,6 +1196,7 @@ export function registerPtyIpc(): void {
         initialPrompt?: string;
         env?: Record<string, string>;
         resume?: boolean;
+        ownerTaskId?: string;
       }
     ) => {
       if (process.env.EMDASH_DISABLE_PTY === '1') {
@@ -1183,8 +1204,19 @@ export function registerPtyIpc(): void {
       }
 
       try {
-        const { id, providerId, cwd, remote, cols, rows, autoApprove, initialPrompt, env, resume } =
-          args;
+        const {
+          id,
+          providerId,
+          cwd,
+          remote,
+          cols,
+          rows,
+          autoApprove,
+          initialPrompt,
+          env,
+          resume,
+          ownerTaskId,
+        } = args;
         const existing = getPty(id);
 
         if (remote?.connectionId) {
@@ -1212,6 +1244,9 @@ export function registerPtyIpc(): void {
             autoApprove,
             initialPrompt,
             resume,
+            id,
+            cwd,
+            ownerTaskId,
           });
 
           const resolvedConfig = resolveProviderCommandConfig(providerId);
@@ -1384,6 +1419,7 @@ export function registerPtyIpc(): void {
                 env,
                 resume: effectiveResume,
                 tmux,
+                ownerTaskId,
               });
 
         // Fall back to shell-based spawn when direct spawn is unavailable or shellSetup/tmux is set
@@ -1410,6 +1446,7 @@ export function registerPtyIpc(): void {
             skipResume: !resume,
             shellSetup,
             tmux,
+            ownerTaskId,
           });
           usedFallback = true;
         }

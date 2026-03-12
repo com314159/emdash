@@ -503,5 +503,45 @@ class LocalFileSystem {
             return { success: false, error: err.message };
         }
     }
+    /**
+     * Rename a file or directory
+     */
+    async rename(oldPath, newPath) {
+        try {
+            const fullOldPath = this.resolvePath(oldPath);
+            const fullNewPath = this.resolvePath(newPath);
+            try {
+                await fs_1.promises.stat(fullOldPath);
+            }
+            catch {
+                return { success: false, error: 'Source does not exist' };
+            }
+            try {
+                await fs_1.promises.stat(fullNewPath);
+                return { success: false, error: 'Destination already exists' };
+            }
+            catch {
+                // Destination doesn't exist - good
+            }
+            await fs_1.promises.rename(fullOldPath, fullNewPath);
+            return { success: true };
+        }
+        catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
+    /**
+     * Create a directory
+     */
+    async mkdir(dirPath) {
+        try {
+            const fullPath = this.resolvePath(dirPath);
+            await fs_1.promises.mkdir(fullPath, { recursive: true });
+            return { success: true };
+        }
+        catch (err) {
+            return { success: false, error: err.message };
+        }
+    }
 }
 exports.LocalFileSystem = LocalFileSystem;

@@ -84,6 +84,8 @@ declare global {
         initialPrompt?: string;
         env?: Record<string, string>;
         resume?: boolean;
+        /** Stable task ID for session isolation (survives conversation ID changes across restarts). */
+        ownerTaskId?: string;
       }) => Promise<{ ok: boolean; reused?: boolean; tmux?: boolean; error?: string }>;
       ptyScpToRemote: (args: { connectionId: string; localPaths: string[] }) => Promise<{
         success: boolean;

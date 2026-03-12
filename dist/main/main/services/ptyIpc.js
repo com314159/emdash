@@ -481,7 +481,7 @@ async function resolveSshInvocation(connectionId) {
     return { target, args };
 }
 function buildRemoteProviderInvocation(args) {
-    const { providerId, autoApprove, initialPrompt, resume } = args;
+    const { providerId, autoApprove, initialPrompt, resume, id, cwd, ownerTaskId } = args;
     const fallbackProvider = (0, registry_1.getProvider)(providerId);
     const resolvedConfig = (0, ptyManager_1.resolveProviderCommandConfig)(providerId);
     const provider = resolvedConfig?.provider ?? fallbackProvider;
@@ -491,8 +491,17 @@ function buildRemoteProviderInvocation(args) {
     const parsedCliParts = (0, ptyManager_1.parseShellArgs)(cliCommand);
     const cliCommandParts = parsedCliParts.length > 0 ? parsedCliParts : [cliCommand];
     const cliCheckCommand = cliCommandParts[0];
-    const cliArgs = (0, ptyManager_1.buildProviderCliArgs)({
-        resume,
+    const cliArgs = [];
+    // Apply per-task session isolation FIRST, before generic resume flags.
+    // When session isolation succeeds (returns true), it adds --resume <uuid> or
+    // --session-id <uuid>, and we must skip the generic resume flag (e.g. -c -r)
+    // to avoid conflicts. This mirrors the logic in startDirectPty/startPty.
+    let usedSessionIsolation = false;
+    if (id && cwd && provider) {
+        usedSessionIsolation = (0, ptyManager_1.applySessionIsolation)(cliArgs, provider, id, cwd, !!resume, ownerTaskId);
+    }
+    cliArgs.push(...(0, ptyManager_1.buildProviderCliArgs)({
+        resume: !usedSessionIsolation && !!resume,
         resumeFlag: resolvedConfig?.resumeFlag ?? fallbackProvider?.resumeFlag,
         defaultArgs: resolvedConfig?.defaultArgs ?? fallbackProvider?.defaultArgs,
         extraArgs: resolvedConfig?.extraArgs,
@@ -501,7 +510,7 @@ function buildRemoteProviderInvocation(args) {
         initialPrompt,
         initialPromptFlag: resolvedConfig?.initialPromptFlag ?? fallbackProvider?.initialPromptFlag,
         useKeystrokeInjection: provider?.useKeystrokeInjection,
-    });
+    }));
     cliArgs.push(...(0, ptyManager_1.getProviderRuntimeCliArgs)({ providerId, target: 'remote' }));
     const cmdParts = [...cliCommandParts, ...cliArgs];
     const cmd = cmdParts.map(shellEscape_1.quoteShellArg).join(' ');
@@ -1007,7 +1016,7 @@ function registerPtyIpc() {
             return { ok: false, error: 'PTY disabled via EMDASH_DISABLE_PTY=1' };
         }
         try {
-            const { id, providerId, cwd, remote, cols, rows, autoApprove, initialPrompt, env, resume } = args;
+            const { id, providerId, cwd, remote, cols, rows, autoApprove, initialPrompt, env, resume, ownerTaskId } = args;
             const existing = (0, ptyManager_1.getPty)(id);
             if (remote?.connectionId) {
                 const wc = event.sender;
@@ -1033,6 +1042,9 @@ function registerPtyIpc() {
                     autoApprove,
                     initialPrompt,
                     resume,
+                    id,
+                    cwd,
+                    ownerTaskId,
                 });
                 const resolvedConfig = (0, ptyManager_1.resolveProviderCommandConfig)(providerId);
                 const mergedEnv = resolvedConfig?.env ? { ...resolvedConfig.env, ...env } : env;
@@ -1176,6 +1188,7 @@ function registerPtyIpc() {
                     env,
                     resume: effectiveResume,
                     tmux,
+                    ownerTaskId,
                 });
             // Fall back to shell-based spawn when direct spawn is unavailable or shellSetup/tmux is set
             let usedFallback = false;
@@ -1202,6 +1215,7 @@ function registerPtyIpc() {
                     skipResume: !resume,
                     shellSetup,
                     tmux,
+                    ownerTaskId,
                 });
                 usedFallback = true;
             }

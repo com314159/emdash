@@ -8,6 +8,8 @@ const DEFAULT_SCROLLBACK_LINES = 100_000;
 
 interface AttachOptions {
   taskId: string;
+  /** Stable task ID for session isolation across restarts. */
+  ownerTaskId?: string;
   container: HTMLElement;
   cwd?: string;
   remote?: {
@@ -63,6 +65,7 @@ class SessionRegistry {
 
     const sessionOptions: TerminalSessionOptions = {
       taskId: options.taskId,
+      ownerTaskId: options.ownerTaskId,
       cwd: options.cwd,
       remote: options.remote,
       providerId: options.providerId,

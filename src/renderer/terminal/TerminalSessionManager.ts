@@ -72,6 +72,8 @@ export interface SessionTheme {
 
 export interface TerminalSessionOptions {
   taskId: string;
+  /** Stable task ID (real DB task ID) for session isolation across restarts. */
+  ownerTaskId?: string;
   cwd?: string;
   remote?: {
     connectionId: string;
@@ -1190,8 +1192,17 @@ export class TerminalSessionManager {
     hasExistingSession: boolean = false
   ): Promise<{ ok: boolean; reused?: boolean; tmux?: boolean; error?: string }> {
     this.ptyConnectStartTime = performance.now();
-    const { taskId, cwd, providerId, shell, env, initialSize, autoApprove, initialPrompt } =
-      this.options;
+    const {
+      taskId,
+      ownerTaskId,
+      cwd,
+      providerId,
+      shell,
+      env,
+      initialSize,
+      autoApprove,
+      initialPrompt,
+    } = this.options;
     const id = taskId;
 
     // Provider CLIs use direct spawn (bypasses shell config loading)
@@ -1209,6 +1220,7 @@ export class TerminalSessionManager {
             initialPrompt,
             env,
             resume: hasExistingSession,
+            ownerTaskId,
           })
         : window.electronAPI.ptyStart({
             id,
